@@ -2,11 +2,13 @@
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import ChecksPanel from '../components/ChecksPanel.vue'
+import SelectionPanel from '../components/SelectionPanel.vue'
 import { getLantern } from '../core/store'
 import { computeAll } from '../core/checks'
 import { DEFAULT_LOFT_OPTIONS } from '../core/paginate'
 import { groupMembers } from '../core/frame'
 import { kindName, membersCsv, downloadText } from '../core/exporter'
+import { recordExport } from '../core/selection'
 import { styleLabel } from '../core/craft'
 import type { FrameMember } from '../core/types'
 
@@ -19,6 +21,7 @@ const full = computed(() => {
   return computeAll(l, { ...DEFAULT_LOFT_OPTIONS, paper: l.pageSize, overlapMm: l.overlapMm })
 })
 const groups = computed(() => (full.value ? groupMembers(full.value.frame.members) : []))
+const sel = computed(() => full.value?.selection ?? null)
 
 function bendText(m: FrameMember): string {
   if (m.bendRadiusMm) return `R${m.bendRadiusMm.toFixed(1)}mm`
@@ -29,12 +32,18 @@ function bendText(m: FrameMember): string {
 function exportCsv() {
   const l = lantern.value
   if (!l || !full.value) return
-  downloadText(`${l.name}-构件清单.csv`, membersCsv(l, full.value.frame.members))
+  const filename = `${l.name}-构件清单-R${l.selection.revision}.csv`
+  const gate = recordExport(l, 'members', filename)
+  if (!gate.ok) {
+    window.alert(gate.error)
+    return
+  }
+  downloadText(filename, membersCsv(l, full.value.frame.members))
 }
 </script>
 
 <template>
-  <div v-if="!lantern || !full" class="missing">找不到该灯样。<router-link to="/">返回</router-link></div>
+  <div v-if="!lantern || !full || !sel" class="missing">找不到该灯样。<router-link to="/">返回</router-link></div>
   <div v-else class="frame-view">
     <section class="head">
       <div>
@@ -45,6 +54,7 @@ function exportCsv() {
           {{ lantern.layers.length }} 层 · {{ lantern.sides }} 棱 ·
           每根篾两端各留 <b>{{ lantern.lashAllowanceMm }}mm</b> 绑扎余量，
           横篾圈接头处（圆形 1 处 / 多边形 {{ lantern.sides }} 处）同样加余量。
+          构件行的宽厚、补加圈道数按<b>选型核定同一份结论</b>重建。
         </p>
       </div>
       <div class="ops">
@@ -53,11 +63,15 @@ function exportCsv() {
       </div>
     </section>
 
+    <SelectionPanel :lantern="lantern" full />
+
     <section class="stats">
       <div class="stat"><span>构件总根数</span><b>{{ full.frame.totalQty }}</b></div>
       <div class="stat"><span>备料总长（含余量）</span><b>{{ (full.frame.stockLengthMm / 1000).toFixed(3) }} m</b></div>
       <div class="stat"><span>净长合计</span><b>{{ (full.frame.rawLengthMm / 1000).toFixed(3) }} m</b></div>
       <div class="stat"><span>绑扎余量合计</span><b>{{ full.frame.lashExtraMm.toFixed(1) }} mm</b></div>
+      <div class="stat"><span>骨架自重</span><b>{{ full.materials.frameMassG.toFixed(1) }} g</b></div>
+      <div class="stat"><span>整灯总重</span><b>{{ full.materials.totalMassKg.toFixed(3) }} kg</b></div>
     </section>
 
     <section v-for="grp in groups" :key="grp.group" class="group">
@@ -67,24 +81,32 @@ function exportCsv() {
           <tr>
             <th>构件名称</th>
             <th>类别</th>
+            <th class="num">规格档</th>
+            <th class="num">宽 (mm)</th>
+            <th class="num">厚 (mm)</th>
             <th class="num">净长 (mm)</th>
             <th class="num">截取长度 (mm，含余量)</th>
             <th class="num">余量处数</th>
             <th class="num">数量</th>
             <th class="num">总截取长 (mm)</th>
+            <th class="num">单根重 (g)</th>
             <th>弯曲半径 / 折角</th>
             <th>说明</th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="m in grp.items" :key="m.id">
+          <tr v-for="m in grp.items" :key="m.id" :class="{ extra: m.extraCourse }">
             <td class="name">{{ m.label }}</td>
             <td>{{ kindName(m.kind) }}</td>
+            <td class="num mono grade">{{ m.gradeId }}</td>
+            <td class="num mono">{{ m.widthMm?.toFixed(1) }}</td>
+            <td class="num mono strong">{{ m.thicknessMm?.toFixed(1) }}</td>
             <td class="num mono">{{ m.rawLengthMm.toFixed(1) }}</td>
             <td class="num mono strong">{{ m.lengthMm.toFixed(1) }}</td>
             <td class="num mono">×{{ m.lashJoints }}</td>
             <td class="num mono">{{ m.qty }}</td>
             <td class="num mono">{{ (m.lengthMm * m.qty).toFixed(1) }}</td>
+            <td class="num mono">{{ m.massEachG?.toFixed(1) }}</td>
             <td class="mono small">{{ bendText(m) }}</td>
             <td class="note">{{ m.note }}</td>
           </tr>
@@ -93,9 +115,9 @@ function exportCsv() {
     </section>
 
     <ChecksPanel
-      :checks="full.checks.filter((c) => ['CHK-01', 'CHK-02', 'CHK-04', 'CHK-08'].includes(c.id))"
+      :checks="full.checks.filter((c) => ['CHK-01', 'CHK-02', 'CHK-04', 'CHK-08', 'CHK-09', 'CHK-10', 'CHK-11', 'CHK-12'].includes(c.id))"
       :elapsed-ms="full.elapsedMs"
-      title="骨架计算自检"
+      title="骨架与选型自检"
     />
   </div>
 </template>
@@ -127,7 +149,7 @@ h2 {
   margin: 0;
   font-size: 12.5px;
   color: var(--ink-soft);
-  max-width: 900px;
+  max-width: 960px;
 }
 
 .ops {
@@ -164,7 +186,7 @@ button.primary:hover {
 
 .stats {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: 1px;
   background: var(--line);
   border: 1px solid var(--line);
@@ -214,7 +236,7 @@ table {
 
 th {
   text-align: left;
-  padding: 7px 12px;
+  padding: 7px 10px;
   color: var(--ink-soft);
   font-weight: 500;
   font-size: 11.5px;
@@ -223,13 +245,17 @@ th {
 }
 
 td {
-  padding: 7px 12px;
+  padding: 7px 10px;
   border-bottom: 1px dashed var(--line);
   vertical-align: top;
 }
 
 tr:last-child td {
   border-bottom: none;
+}
+
+tr.extra td {
+  background: #f4f9f4;
 }
 
 .num {
@@ -245,6 +271,10 @@ tr:last-child td {
   color: #8f1c19;
 }
 
+.grade {
+  color: var(--blue);
+}
+
 .small {
   font-size: 12px;
 }
@@ -256,7 +286,7 @@ tr:last-child td {
 .note {
   color: var(--ink-soft);
   font-size: 12px;
-  max-width: 340px;
+  max-width: 300px;
 }
 
 .missing {

@@ -19,6 +19,7 @@
       "id": "xuan",
       "name": "宣纸",
       "gluePerM2": 45,
+      "weightGPerM2": 45,
       "wasteRatio": 0.12,
       "color": "#f7f2e4",
       "note": "吸水性强，缝份建议 10~12mm，胶用浆糊"
@@ -27,6 +28,7 @@
       "id": "silk",
       "name": "绸布",
       "gluePerM2": 25,
+      "weightGPerM2": 70,
       "wasteRatio": 0.1,
       "color": "#e9c7c7",
       "note": "易滑，裁片需略加湿定型，缝份建议 10mm"
@@ -35,11 +37,35 @@
       "id": "parchment",
       "name": "羊皮纸",
       "gluePerM2": 35,
+      "weightGPerM2": 90,
       "wasteRatio": 0.08,
       "color": "#e7d3ad",
       "note": "挺度好，折边可用低温熨烫定型"
     }
   ],
+  "bamboo": {
+    "comment": "竹篾规格档：干燥毛竹密度 0.72g/cm³；许用弯曲应力、挠度限值（净跨/150）、最小弯弧半径=25×厚均取竹扎灯笼作坊经验值",
+    "densityGMm3": 0.00072,
+    "elasticModulusNmm2": 9000,
+    "allowableBendNmm2": 12,
+    "loadSafety": 1.35,
+    "sagDivisor": 150,
+    "ribLoadShare": 0.5,
+    "bendRadiusFactor": 25,
+    "threadGPerM": 0.4,
+    "ledGramEach": 1.2,
+    "gForce": 0.00980665,
+    "maxExtraRingsPerBand": 2,
+    "grades": [
+      { "id": "G1", "name": "一号细篾", "widthMm": 2.0, "thicknessMm": 0.8, "maxSpanMm": 60, "note": "最细一档，只做小灯上口或装饰圈" },
+      { "id": "G2", "name": "二号细篾", "widthMm": 2.5, "thicknessMm": 1.0, "maxSpanMm": 90, "note": "小号灯横篾圈" },
+      { "id": "G3", "name": "三号篾", "widthMm": 3.0, "thicknessMm": 1.2, "maxSpanMm": 130, "note": "中小灯通用竖篾" },
+      { "id": "G4", "name": "四号篾", "widthMm": 3.5, "thicknessMm": 1.5, "maxSpanMm": 180, "note": "中型宫灯主力规格" },
+      { "id": "G5", "name": "五号篾", "widthMm": 4.5, "thicknessMm": 2.0, "maxSpanMm": 240, "note": "大型灯竖篾与大直径圈" },
+      { "id": "G6", "name": "六号粗篾", "widthMm": 6.0, "thicknessMm": 2.6, "maxSpanMm": 320, "note": "大灯承重，上口弯弧需加热" },
+      { "id": "G7", "name": "七号粗篾", "widthMm": 8.0, "thicknessMm": 3.5, "maxSpanMm": 420, "note": "目录内最粗一档，再粗须双拼或加圈" }
+    ]
+  },
   "presets": [
     {
       "id": "hex-palace",

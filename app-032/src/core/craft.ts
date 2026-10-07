@@ -6,9 +6,48 @@ export interface CoveringSpec {
   id: Covering
   name: string
   gluePerM2: number
+  /** 蒙面材料面密度 g/m²（含胶前） */
+  weightGPerM2: number
   wasteRatio: number
   color: string
   note: string
+}
+
+/** 竹篾规格档（目录 7 档，宽厚单位 mm） */
+export interface BambooGrade {
+  id: string
+  name: string
+  widthMm: number
+  thicknessMm: number
+  /** 作坊经验：该档净跨超过此值就容易下塌（mm） */
+  maxSpanMm: number
+  note: string
+}
+
+export interface BambooCraft {
+  /** 干燥毛竹密度 g/mm³（= 0.72 g/cm³） */
+  densityGMm3: number
+  /** 顺纹抗弯弹性模量 N/mm² */
+  elasticModulusNmm2: number
+  /** 许用弯曲应力 N/mm²（作坊经验安全值） */
+  allowableBendNmm2: number
+  /** 荷载安全系数（蒙面绷紧与手拎冲击） */
+  loadSafety: number
+  /** 挠度限值 = 净跨 / sagDivisor */
+  sagDivisor: number
+  /** 蒙面/扎线等外载在竖篾与横篾圈之间的分摊比例（竖篾侧） */
+  ribLoadShare: number
+  /** 最小弯弧半径 = bendRadiusFactor × 篾厚（热弯经验） */
+  bendRadiusFactor: number
+  /** 扎线线密度 g/m */
+  threadGPerM: number
+  /** 单颗 LED（含灯座导线）重量 g */
+  ledGramEach: number
+  /** g → N */
+  gForce: number
+  /** 每层最多允许补几道横篾圈 */
+  maxExtraRingsPerBand: number
+  grades: BambooGrade[]
 }
 
 export interface PresetParams {
@@ -51,6 +90,42 @@ export const CRAFT = raw.craft as {
 
 export const COVERINGS = raw.coverings as CoveringSpec[]
 export const PRESETS = raw.presets as LanternPreset[]
+export const BAMBOO = raw.bamboo as BambooCraft
+
+/** 单根篾线密度 g/mm（矩形截面：宽厚mm × 密度g/mm³） */
+export function bambooLinearGPerMm(g: BambooGrade): number {
+  return g.widthMm * g.thicknessMm * BAMBOO.densityGMm3
+}
+
+export function gradeById(id: string): BambooGrade {
+  return BAMBOO.grades.find((x) => x.id === id) || BAMBOO.grades[0]
+}
+
+export function gradeIndex(id: string): number {
+  return Math.max(0, BAMBOO.grades.findIndex((x) => x.id === id))
+}
+
+/** 截面模量 Z = b·t²/6（mm³），横篾圈在自身平面内受弯、竖篾下塌均用厚向 */
+export function sectionModulus(g: BambooGrade): number {
+  return (g.widthMm * g.thicknessMm * g.thicknessMm) / 6
+}
+
+/** 截面惯性矩 I = b·t³/12（mm⁴） */
+export function sectionInertia(g: BambooGrade): number {
+  return (g.widthMm * g.thicknessMm ** 3) / 12
+}
+
+/** 该档最小可弯半径 mm（热弯经验 = 系数 × 厚） */
+export function minBendRadius(g: BambooGrade): number {
+  return BAMBOO.bendRadiusFactor * g.thicknessMm
+}
+
+/** 预览图上按篾厚绘制的线宽与配色（1:1 mm 坐标系，线宽即篾厚；最细给到 0.6mm 保证可见） */
+export function gradeStroke(g: BambooGrade): { widthMm: number; color: string } {
+  const colors = ['#7fa8c9', '#5b8db5', '#3f74a3', '#2f5f8a', '#8a5a1d', '#6d4416', '#55330f']
+  const k = Math.max(0, BAMBOO.grades.findIndex((x) => x.id === g.id))
+  return { widthMm: Math.max(0.6, g.thicknessMm), color: colors[k] || '#2f5f8a' }
+}
 
 export function coveringSpec(id: Covering): CoveringSpec {
   return COVERINGS.find((c) => c.id === id) || COVERINGS[0]

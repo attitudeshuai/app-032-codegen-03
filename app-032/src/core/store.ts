@@ -6,6 +6,7 @@ import { reactive, watch } from 'vue'
 import type { Lantern } from './types'
 import { CRAFT, coveringSpec, presetById, PRESETS } from './craft'
 import { buildGeometry, effectiveHeight, r1 } from './geometry'
+import { initSelection, syncSelectionState } from './selection'
 
 const KEY = 'lantern-frame-lofting.v1'
 
@@ -65,10 +66,22 @@ export function createFromPreset(presetId: string): Lantern {
     wasteRatio: coveringSpec(p.covering).wasteRatio,
     pageSize: 'A4',
     overlapMm: CRAFT.defaultOverlapMm,
+    selection: {
+      mode: 'uniform',
+      ribGrade: '',
+      ringGrades: [],
+      extraRings: [],
+      revision: 0,
+      confirmedSignature: '',
+      confirmedAt: '',
+      abandonedPathNote: ''
+    },
+    exportRecords: [],
     createdAt: now,
     updatedAt: now
   }
   syncLayerDiameters(lantern)
+  initSelection(lantern)
   return lantern
 }
 
@@ -92,6 +105,8 @@ export function distributeLayers(l: Lantern) {
   while (l.layerColors.length < count) l.layerColors.push(l.color)
   l.layerColors = l.layerColors.slice(0, count)
   syncLayerDiameters(l)
+  // 层数变了，选型核定的节点档/补圈道数数组按推荐补齐（旧层保留）
+  syncSelectionState(l)
 }
 
 export function addLantern(l: Lantern) {
@@ -147,7 +162,11 @@ export function loadStore() {
     const raw = localStorage.getItem(KEY)
     if (raw) {
       const data = JSON.parse(raw) as { lanterns?: Lantern[] }
-      if (Array.isArray(data.lanterns)) state.lanterns = data.lanterns
+      if (Array.isArray(data.lanterns)) {
+        state.lanterns = data.lanterns
+        // 旧版本灯样没有选型状态：初始化推荐档（R0 未确认，需重新核定）
+        for (const x of state.lanterns) initSelection(x)
+      }
     }
   } catch {
     state.storageError = '本地灯样数据损坏，已重置'

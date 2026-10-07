@@ -190,6 +190,7 @@ function stripText(it: SheetItemStrip): string {
   const name = m.label.includes(kind) ? m.label : `${m.label}（${kind}）`
   const parts = [
     `[${it.tag}] ${name}`,
+    `规格 ${m.gradeId || '—'} ${m.widthMm ? f1(m.widthMm) + '×' + f1(m.thicknessMm ?? 0) + 'mm' : ''}`,
     `全长 ${f1(it.totalMm)}mm`,
     `本段 ${f1(it.lengthMm)}mm（整根第 ${f1(it.startMm)}–${f1(it.startMm + it.lengthMm)}mm）`
   ]
@@ -576,7 +577,11 @@ function today(): string {
         {{ lantern.totalHeightMm }}mm · {{ lantern.layers.length }} 层 · {{ lantern.sides }} 棱 ·
         收口 {{ styleLabel(lantern.mouthStyle) }}/{{ styleLabel(lantern.bottomStyle) }} ·
         每端绑扎余量 {{ lantern.lashAllowanceMm }}mm · 蒙面 {{ coveringLabel(lantern.covering) }} ·
-        打印日期 {{ today() }}
+        选型版次 R{{ lantern.selection?.revision ?? 0 }} ·
+        <b :style="{ color: full.selection.stale || !full.selection.pass ? '#b3241f' : '#2f7a63' }">
+          {{ full.selection.pass && !full.selection.stale ? '选型已核定通过' : '选型未核定/已失效，本单不得下料' }}
+        </b>
+        · 打印日期 {{ today() }}
       </p>
       <table class="doc-table">
         <thead>
@@ -584,28 +589,34 @@ function today(): string {
             <th>构件名称</th>
             <th>类别</th>
             <th>分组</th>
+            <th class="num">规格</th>
+            <th class="num">宽×厚(mm)</th>
             <th class="num">净长 (mm)</th>
             <th class="num">截取长度 (mm，含余量)</th>
             <th class="num">余量处数</th>
             <th class="num">数量</th>
             <th class="num">总截取长 (mm)</th>
+            <th class="num">单根重(g)</th>
             <th>弯曲半径 / 折角</th>
           </tr>
         </thead>
         <tbody>
           <template v-for="grp in frameGroups" :key="grp.group">
             <tr class="doc-group">
-              <td colspan="9">{{ grp.group }}</td>
+              <td colspan="12">{{ grp.group }}</td>
             </tr>
             <tr v-for="m in grp.items" :key="m.id">
               <td>{{ m.label }}</td>
               <td>{{ kindName(m.kind) }}</td>
               <td>{{ m.group }}</td>
+              <td class="num mono">{{ m.gradeId }}</td>
+              <td class="num mono strong">{{ f1(m.widthMm || 0) }}×{{ f1(m.thicknessMm || 0) }}</td>
               <td class="num mono">{{ f1(m.rawLengthMm) }}</td>
               <td class="num mono strong">{{ f1(m.lengthMm) }}</td>
               <td class="num mono">×{{ m.lashJoints }}</td>
               <td class="num mono">{{ m.qty }}</td>
               <td class="num mono">{{ f1(m.lengthMm * m.qty) }}</td>
+              <td class="num mono">{{ f1(m.massEachG || 0) }}</td>
               <td class="mono">{{ m.bendRadiusMm ? `R${f1(m.bendRadiusMm)}mm` : m.bendAngleDeg ? `${f1(m.bendAngleDeg)}°` : '—' }}</td>
             </tr>
           </template>
@@ -614,7 +625,8 @@ function today(): string {
       <p class="doc-foot">
         合计：构件 {{ full.frame.totalQty }} 根 · 备料（含余量）{{ (full.frame.stockLengthMm / 1000).toFixed(3) }}m ·
         净长 {{ (full.frame.rawLengthMm / 1000).toFixed(3) }}m · 绑扎余量合计
-        {{ f1(full.frame.lashExtraMm) }}mm
+        {{ f1(full.frame.lashExtraMm) }}mm · 骨架自重 {{ f1(full.materials.frameMassG) }}g ·
+        整灯总重 {{ f1(full.materials.totalMassG) }}g（{{ full.materials.totalMassKg.toFixed(3) }}kg，{{ full.materials.totalWeightN.toFixed(2) }}N）
       </p>
     </section>
 

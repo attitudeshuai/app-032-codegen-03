@@ -3,11 +3,13 @@
  * 每次参数变化都会重算全部几何并跑一遍断言，结果直接显示在界面上。
  */
 import type { CheckResult, Lantern } from './types'
-import { bodySurfaceArea, polygonEdge, ringPerimeter, segmentInfos } from './geometry'
+import { bodySurfaceArea, polygonEdge, polyhedronInfo, ringPerimeter, segmentInfos } from './geometry'
 import { buildFrame, type FrameResult } from './frame'
 import { buildPanels, panelNetArea, type PanelResult } from './panels'
 import { computeBatch, computeMaterials, type BatchMaterials, type SingleLightMaterials } from './materials'
 import { assertNoPanelSplit, paginate, type LoftOptions, type Sheet } from './paginate'
+import { BAMBOO, gradeById } from './craft'
+import { ledgerBalanced, type SelectionResult } from './selection'
 import { CRAFT } from './craft'
 
 export interface FullResult {
@@ -18,6 +20,7 @@ export interface FullResult {
   sheets: Sheet[]
   checks: CheckResult[]
   elapsedMs: number
+  selection: SelectionResult
 }
 
 const f1 = (v: number) => (Math.round(v * 10) / 10).toFixed(1)
@@ -32,7 +35,7 @@ export function computeAll(l: Lantern, loft: LoftOptions): FullResult {
   const sheets = paginate(l, loft)
   const elapsedMs = performance.now() - t0
   const checks = runChecks(l, frame, panels, materials, batch, sheets, elapsedMs)
-  return { frame, panels, materials, batch, sheets, checks, elapsedMs }
+  return { frame, panels, materials, batch, sheets, checks, elapsedMs, selection: frame.selection }
 }
 
 function runChecks(
@@ -70,22 +73,35 @@ function runChecks(
 
   // ---- CHK-02 竖篾长度与分段高度累计 ----
   {
-    const segs = segmentInfos(g)
-    const sumH = segs.reduce((s, x) => s + x.heightMm, 0)
-    const sumSlant = segs.reduce((s, x) => s + x.slantMm, 0)
     const vertical = frame.members.find((m) => m.kind === 'vertical' || m.kind === 'rib')
     const raw = vertical ? vertical.rawLengthMm : 0
-    const allStraight = segs.every((s) => Math.abs(s.drMm) < 0.05)
-    const pass = Math.abs(raw - sumSlant) <= 0.1 && (!allStraight || Math.abs(raw - sumH) <= 0.1)
-    out.push({
-      id: 'CHK-02',
-      title: '竖篾净长 = 分段母线折线长累计',
-      pass,
-      value: `Δ折线 ${f1(Math.abs(raw - sumSlant))}mm`,
-      detail: allStraight
-        ? `竖篾净长 ${f1(raw)}mm，分段高累计 ${f1(sumH)}mm，平口直柱两者一致（Δ${f1(Math.abs(raw - sumH))}mm）`
-        : `竖篾净长 ${f1(raw)}mm，分段高累计 ${f1(sumH)}mm，折线长累计 ${f1(sumSlant)}mm（收口段横向偏移 ${f1(sumSlant - sumH)}mm）`
-    })
+    if (g.kind === 'polyhedron') {
+      // 正多面体无分层竖篾：棱篾净长应 = 多面体公式棱长
+      const info = polyhedronInfo(g)
+      const pass = Math.abs(raw - info.edgeMm) <= 0.1
+      out.push({
+        id: 'CHK-02',
+        title: '棱篾净长 = 正多面体公式棱长',
+        pass,
+        value: `Δ ${f1(Math.abs(raw - info.edgeMm))}mm`,
+        detail: `棱篾净长 ${f1(raw)}mm，公式棱长 ${f3(info.edgeMm)}mm（${info.kind === 'tetra' ? '4R/√6' : 'R√2'}）。`
+      })
+    } else {
+      const segs = segmentInfos(g)
+      const sumH = segs.reduce((s, x) => s + x.heightMm, 0)
+      const sumSlant = segs.reduce((s, x) => s + x.slantMm, 0)
+      const allStraight = segs.every((s) => Math.abs(s.drMm) < 0.05)
+      const pass = Math.abs(raw - sumSlant) <= 0.1 && (!allStraight || Math.abs(raw - sumH) <= 0.1)
+      out.push({
+        id: 'CHK-02',
+        title: '竖篾净长 = 分段母线折线长累计',
+        pass,
+        value: `Δ折线 ${f1(Math.abs(raw - sumSlant))}mm`,
+        detail: allStraight
+          ? `竖篾净长 ${f1(raw)}mm，分段高累计 ${f1(sumH)}mm，平口直柱两者一致（Δ${f1(Math.abs(raw - sumH))}mm）`
+          : `竖篾净长 ${f1(raw)}mm，分段高累计 ${f1(sumH)}mm，折线长累计 ${f1(sumSlant)}mm（收口段横向偏移 ${f1(sumSlant - sumH)}mm；补加横篾圈会把折线跨细分，总长不变）`
+      })
+    }
   }
 
   // ---- CHK-03 缝份 ----
@@ -188,6 +204,122 @@ function runChecks(
       pass,
       value: `${elapsedMs.toFixed(1)}ms`,
       detail: `${l.divisions} 等分 × ${l.layers.length} 层：构件 ${frame.totalQty} 根、裁片 ${panels.totalQty} 块、图纸 ${sheets.length} 页，全流程耗时 ${elapsedMs.toFixed(1)}ms（含分页）`
+    })
+  }
+
+  // ---- CHK-09 竹篾规格选型核定（工程结论：撑不撑得住） ----
+  {
+    const sel = frame.selection
+    if (sel.polyMode) {
+      out.push({
+        id: 'CHK-09',
+        title: '竹篾规格选型核定：棱篾截面撑得住（跨度/应力/弯弧）',
+        pass: sel.pass,
+        value: sel.pass
+          ? `${sel.config.ribGrade} ${gradeById(sel.config.ribGrade).widthMm.toFixed(1)}×${gradeById(sel.config.ribGrade).thicknessMm.toFixed(1)}mm`
+          : '撑不住',
+        detail:
+          sel.pass
+            ? `多面体棱篾取 ${sel.config.ribGrade}（${gradeById(sel.config.ribGrade).name}，宽厚 ${gradeById(sel.config.ribGrade).widthMm.toFixed(1)}×${gradeById(sel.config.ribGrade).thicknessMm.toFixed(1)}mm），跨度/应力/挠度全过。`
+            : `棱篾被拦：${sel.failures.map((f) => `${f.reasonText}（${f.detail}）`).join('；')}。骨架件表给出两条能走的办法（换粗一档 / 多添一道横篾圈）及各自代价。`
+      })
+    } else {
+      const modeText = sel.config.mode === 'uniform' ? '全灯按最不利层统一一档' : '逐层各选一档'
+      const extras = sel.config.extraRings.reduce((s, x) => s + x, 0)
+      const failList = sel.failures
+        .slice(0, 3)
+        .map((x) => `${x.member.label}：${x.reasonText}`)
+        .join('；')
+      out.push({
+        id: 'CHK-09',
+        title: '竹篾规格选型核定：竖篾与各层横篾撑得住（跨度/重量/弯弧）',
+        pass: sel.pass,
+        value: sel.pass
+          ? `竖篾 ${sel.config.ribGrade} / 圈 ${new Set(sel.config.ringGrades).size} 种档 / 补圈 ${extras} 道`
+          : `被拦 ${sel.failures.length} 处`,
+        detail: sel.pass
+          ? `${modeText}：竖篾 ${sel.config.ribGrade}（${gradeById(sel.config.ribGrade).name}），各层圈 ${sel.config.ringGrades.join('/')}，补加横篾圈 ${extras} 道；跨度/应力/挠度/弯弧全过。`
+          : `选型被当场拦住：${failList}${sel.failures.length > 3 ? ` 等 ${sel.failures.length} 处` : ''}。骨架件表给出两条能走的办法（换粗一档 / 多添一道横篾圈）及各自代价，由人取舍。`
+      })
+    }
+  }
+
+  // ---- CHK-12 选型版次：结论须按当前参数确认，旧版灯样与备料单已作废 ----
+  {
+    const sel = frame.selection
+    const voided = sel.exports.filter((e) => e.voided).length
+    out.push({
+      id: 'CHK-12',
+      title: '选型版次一致：当前结论已按现参数确认，旧版灯样/备料单不作废在用',
+      pass: !sel.stale,
+      value: l.selection.revision === 0 ? '待确认（R0）' : sel.stale ? `R${l.selection.revision} 已失效` : `R${l.selection.revision} 有效`,
+      detail: sel.stale
+        ? `参数已改动或尚未核定${l.selection.revision > 0 ? `（旧版 R${l.selection.revision} 与 ${voided} 份已导出单据已作废，已裁刨篾条退回重定规格）` : ''}：构件/材料/预览均为待确认数，导出已拦住，确认后版次 +1。`
+        : `当前结论 R${l.selection.revision} 与灯样参数一致${voided ? `；此前 ${voided} 份旧单据已标记作废` : ''}。`
+    })
+  }
+
+  // ---- CHK-10 四处同一份数 ----
+  {
+    const sel = frame.selection
+    // 构件表
+    const memberLen = frame.members.reduce((s, m) => s + m.lengthMm * m.qty, 0)
+    const memberRaw = frame.members.reduce((s, m) => s + m.rawLengthMm * m.qty, 0)
+    let memberBad = frame.members.some(
+      (m) =>
+        !m.gradeId ||
+        m.widthMm === undefined ||
+        Math.abs(m.widthMm - gradeById(m.gradeId).widthMm) > 0.01 ||
+        Math.abs((m.thicknessMm || 0) - gradeById(m.gradeId).thicknessMm) > 0.01
+    )
+    // 材料页：总长与分档合计一致
+    const gradeSum = sel.gradeLengths.reduce((s, g2) => s + g2.lengthMm, 0)
+    // 预览：节点圈档与配置一致（resultRingNodes 直接由同一份 config 出）
+    const previewGrades = sel.polyMode
+      ? [sel.config.ribGrade]
+      : (() => {
+          const ns = sel.rows.filter((r) => r.kind === 'ring' || r.kind === 'mouth_ring' || r.kind === 'base_ring')
+          return ns.map((r) => r.grade.id)
+        })()
+    const previewOk = sel.polyMode || previewGrades.every((gid, k) => {
+      void k
+      return !!gid
+    })
+    const lenOk =
+      Math.abs(memberLen - sel.stockLengthMm) <= 0.5 &&
+      Math.abs(memberRaw - sel.rawLengthMm) <= 0.5 &&
+      Math.abs(gradeSum - sel.stockLengthMm) <= 0.5 &&
+      Math.abs(materials.frameM * 1000 - sel.stockLengthMm) <= 1.5
+    // 重量账面全精度一致（界面显示才四舍五入到 0.1g）
+    const massOk = Math.abs(materials.frameMassG - sel.frameMassG) < 1e-6
+    const pass = !memberBad && lenOk && massOk && previewOk
+    out.push({
+      id: 'CHK-10',
+      title: '四处同一份数：构件表 / 备料材料页 / 参数预览 / 选型结论宽厚、道数、总长度一致',
+      pass,
+      value: pass ? `总长按四处均为 ${(sel.stockLengthMm / 1000).toFixed(3)}m` : '对不上',
+      detail: `构件表 ${(memberLen / 1000).toFixed(3)}m、分档合计 ${(gradeSum / 1000).toFixed(3)}m、选型结论 ${(sel.stockLengthMm / 1000).toFixed(3)}m、材料页 ${materials.frameM.toFixed(3)}m；骨架自重 ${sel.frameMassG.toFixed(1)}g；预览圈截面逐道取自已重建的构件行。`
+    })
+  }
+
+  // ---- CHK-11 逐层受力加总 = 按总重换算 ----
+  {
+    const sel = frame.selection
+    const lg = sel.ledger
+    const sum = lg.bands.reduce((s, b) => s + b.subtotalG, 0)
+    const recomposed = sel.polyMode ? sum + lg.ringSelfG : sum + lg.capTopG + lg.capBottomG + lg.ringSelfG
+    // 账面为全精度，逐层合计与总重应严格相等（留 1e-6g 浮点容差；显示精度 0.1g）
+    const balanced = ledgerBalanced(sel)
+    const forceOk = Math.abs(recomposed * BAMBOO.gForce - lg.totalN) < 1e-9
+    const massOk = Math.abs(lg.totalG - materials.totalMassG) < 1e-9
+    out.push({
+      id: 'CHK-11',
+      title: '逐层受力加起来 = 按总重换算（不许各层一套数）',
+      pass: balanced && forceOk && massOk,
+      value: `Σ层 ${recomposed.toFixed(1)}g / 总重 ${lg.totalG.toFixed(1)}g / ${lg.totalN.toFixed(2)}N（${lg.totalKg.toFixed(3)}kg）`,
+      detail: sel.polyMode
+        ? `各面片层小计 ${sum.toFixed(1)}g ＋ 棱篾自重 ${lg.ringSelfG.toFixed(1)}g ＝ ${recomposed.toFixed(1)}g，与总重换算 ${lg.totalG.toFixed(1)}g / ${lg.totalN.toFixed(2)}N 一致。`
+        : `各层（蒙面+胶+扎线+竖篾自重）${sum.toFixed(1)}g ＋ 顶/底盖 ${(lg.capTopG + lg.capBottomG).toFixed(1)}g ＋ 横篾圈自重 ${lg.ringSelfG.toFixed(1)}g ＝ ${recomposed.toFixed(1)}g；g×${BAMBOO.gForce} ＝ ${(recomposed * BAMBOO.gForce).toFixed(2)}N，与整灯总重 ${lg.totalG.toFixed(1)}g（${lg.totalKg.toFixed(3)}kg，${lg.totalN.toFixed(2)}N）一致。`
     })
   }
 

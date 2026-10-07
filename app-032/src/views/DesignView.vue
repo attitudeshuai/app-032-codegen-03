@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import LanternPreview from '../components/LanternPreview.vue'
 import ChecksPanel from '../components/ChecksPanel.vue'
+import SelectionPanel from '../components/SelectionPanel.vue'
 import { getLantern, distributeLayers, syncLayerDiameters } from '../core/store'
 import { computeAll } from '../core/checks'
 import { DEFAULT_LOFT_OPTIONS } from '../core/paginate'
@@ -80,6 +81,13 @@ function onCovering(e: Event) {
   const v = (e.target as HTMLSelectElement).value as Lantern['covering']
   l.covering = v
   l.wasteRatio = coveringSpec(v).wasteRatio
+}
+
+/** 最大直径直接 v-model，失焦/改值后把派生的各层直径同步回灯样（预览与选型本来就按实时轮廓算） */
+function onMaxDiameter() {
+  const l = lantern.value
+  if (!l) return
+  syncLayerDiameters(l)
 }
 
 function setSides(e: Event) {
@@ -163,7 +171,7 @@ function onCtrl(v: { which: 1 | 2; x: number; y: number }) {
       <div class="row">
         <div class="field">
           <label>最大直径 (mm)</label>
-          <input v-model.number="lantern.maxDiameterMm" type="number" min="20" max="3000" step="1" />
+          <input v-model.number="lantern.maxDiameterMm" type="number" min="20" max="3000" step="1" @change="onMaxDiameter" />
         </div>
         <div class="field">
           <label>总高 (mm)</label>
@@ -336,6 +344,24 @@ function onCtrl(v: { which: 1 | 2; x: number; y: number }) {
         />
       </div>
 
+      <SelectionPanel :lantern="lantern" />
+
+      <section v-if="full?.selection.diff" class="recheck">
+        <h4>改了参数后的重算对照（四处各变了什么）</h4>
+        <dl>
+          <dt>参数</dt>
+          <dd><span v-for="(x, i) in full.selection.diff.paramChanges" :key="'p' + i">{{ x }}<br /></span></dd>
+          <dt>骨架构件表<br /><small>哪几根宽厚/道数变了</small></dt>
+          <dd><span v-for="(x, i) in full.selection.diff.memberChanges" :key="'m' + i">· {{ x }}<br /></span></dd>
+          <dt>备料/材料页<br /><small>哪几项材料与长度变了</small></dt>
+          <dd><span v-for="(x, i) in full.selection.diff.materialChanges" :key="'a' + i">· {{ x }}<br /></span></dd>
+          <dt>灯体预览<br /><small>哪几层的圈变了</small></dt>
+          <dd><span v-for="(x, i) in full.selection.diff.previewChanges" :key="'v' + i">· {{ x }}<br /></span></dd>
+          <dt>自检<br /><small>哪条结论翻了</small></dt>
+          <dd class="flips"><span v-for="(x, i) in full.selection.diff.checkFlips" :key="'c' + i">· {{ x }}<br /></span></dd>
+        </dl>
+      </section>
+
       <div v-if="full" class="stats">
         <div class="stat"><span>构件总数</span><b>{{ full.frame.totalQty }}</b></div>
         <div class="stat"><span>竹篾备料</span><b>{{ full.materials.frameM.toFixed(3) }} m</b></div>
@@ -345,6 +371,8 @@ function onCtrl(v: { which: 1 | 2; x: number; y: number }) {
         <div class="stat"><span>灯体表面积</span><b>{{ full.materials.surfaceM2.toFixed(3) }} m²</b></div>
         <div class="stat"><span>灯体体积</span><b>{{ full.materials.volumeL.toFixed(3) }} L</b></div>
         <div class="stat"><span>1:1 图纸</span><b>{{ full.sheets.length }} 页（{{ lantern.pageSize }}）</b></div>
+        <div class="stat"><span>骨架自重</span><b>{{ full.materials.frameMassG.toFixed(1) }} g</b></div>
+        <div class="stat"><span>整灯总重</span><b>{{ full.materials.totalMassKg.toFixed(3) }} kg</b></div>
       </div>
 
       <p v-if="poly" class="poly-note">
@@ -662,5 +690,47 @@ button:hover {
   padding: 40px;
   text-align: center;
   color: var(--ink-soft);
+}
+
+.recheck {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  padding: 12px 16px;
+}
+
+.recheck h4 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: #8f1c19;
+}
+
+.recheck dl {
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  gap: 6px 12px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.recheck dt {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.recheck dt small {
+  font-weight: 400;
+  color: var(--ink-soft);
+}
+
+.recheck dd {
+  margin: 0;
+  color: var(--ink-soft);
+}
+
+.recheck .flips {
+  color: var(--red);
+  font-weight: 600;
 }
 </style>

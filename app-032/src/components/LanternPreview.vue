@@ -3,6 +3,8 @@
 import { computed, ref } from 'vue'
 import type { Lantern } from '../core/types'
 import { buildGeometry, radiusAtY, segmentInfos, topShoulder } from '../core/geometry'
+import { computeSelection, resultRingNodes } from '../core/selection'
+import { gradeStroke } from '../core/craft'
 
 const props = defineProps<{
   lantern: Lantern
@@ -12,6 +14,9 @@ const props = defineProps<{
 const emit = defineEmits<{ (e: 'update-ctrl', v: { which: 1 | 2; x: number; y: number }): void }>()
 
 const g = computed(() => buildGeometry(props.lantern))
+/** 选型结论：预览各层圈（含补加圈）的截面宽厚与线色取同一份结论 */
+const sel = computed(() => computeSelection(props.lantern))
+const drawRings = computed(() => resultRingNodes(sel.value))
 const dragging = ref<0 | 1 | 2>(0)
 
 const PAD = 46
@@ -68,15 +73,31 @@ const outlinePath = computed(() => {
   return `M ${right.join(' L ')} L ${left.join(' L ')} Z`
 })
 
-const rings = computed(() => {
-  const geo = g.value
-  return geo.sections.map((s) => ({
-    y: sy(s.yMm),
-    x1: sx(-s.radiusMm),
-    x2: sx(s.radiusMm),
-    r: s.radiusMm,
-    label: s.index === 0 ? '底' : s.index === geo.sections.length - 1 ? '口' : String(s.index)
-  }))
+/** 各层圈（含补加圈）：线宽 = 选定篾厚（1:1），颜色按规格档 */
+const ringDraws = computed(() =>
+  drawRings.value.map((rn) => {
+    const st = gradeStroke(rn.grade)
+    return {
+      y: sy(rn.y),
+      x1: sx(-rn.r),
+      x2: sx(rn.r),
+      r: rn.r,
+      widthMm: st.widthMm,
+      color: st.color,
+      extra: rn.extraCourse > 0,
+      label: `${rn.grade.id} ${rn.grade.widthMm.toFixed(1)}×${rn.grade.thicknessMm.toFixed(1)}`,
+      name: rn.grade.name
+    }
+  })
+)
+
+/** 俯视/等轴测用的节点（含补加圈），与构件表圈节点同一来源；多面体回落到轮廓截面 */
+const sectionRings = computed(() => {
+  if (sel.value.polyMode) {
+    const grade = sel.value.rows[0]?.grade
+    return g.value.sections.map((s) => ({ y: s.yMm, r: s.radiusMm, grade, extra: false, extraCourse: 0, band: -1, stroke: grade ? gradeStroke(grade) : { widthMm: 1, color: '#7a2b1c' } }))
+  }
+  return drawRings.value.map((rn) => ({ ...rn, extra: rn.extraCourse > 0, stroke: gradeStroke(rn.grade) }))
 })
 
 /** 棱柱可见棱线（前后面投影） */
@@ -149,14 +170,14 @@ function endDrag() {
   dragging.value = 0
 }
 
-/** 等轴测线框投影 */
+/** 等轴测线框投影（节点含补加圈，截面取选型结论） */
 const isoProjection = computed(() => {
   const geo = g.value
   const n = geo.polygon ? geo.n : Math.max(12, geo.n)
-  const ringsPts = geo.sections.map((s) =>
+  const ringsPts = sectionRings.value.map((s) =>
     Array.from({ length: n }, (_, k) => {
       const a = -Math.PI / 2 + (2 * Math.PI * k) / n
-      return { x: s.radiusMm * Math.cos(a), y: s.yMm, z: s.radiusMm * Math.sin(a) }
+      return { x: s.r * Math.cos(a), y: s.y, z: s.r * Math.sin(a) }
     })
   )
   const proj = (p: { x: number; y: number; z: number }) => ({
@@ -183,6 +204,7 @@ const isoProjection = computed(() => {
     w: maxX - minX + pad * 2,
     h: maxY - minY + pad * 2,
     ringsPts,
+    ringsMeta: sectionRings.value.map((s) => ({ stroke: s.stroke, extra: s.extra, label: s.grade ? `${s.grade.id}` : '' })),
     proj
   }
 })
@@ -204,7 +226,7 @@ const isoPaths = computed(() => {
   }
   const topRing = rings[rings.length - 1]
   const bottomRing = rings[0]
-  return { rings, verticals, bottomFill: bottomRing.join(' L '), topFill: topRing.join(' L ') }
+  return { rings, meta: p.ringsMeta, verticals, bottomFill: bottomRing.join(' L '), topFill: topRing.join(' L ') }
 })
 </script>
 
@@ -239,7 +261,27 @@ const isoPaths = computed(() => {
       <path :d="outlinePath" fill="none" stroke="#7a2b1c" stroke-width="1.1" />
 
       <g class="rings">
-        <line v-for="(r, i) in rings" :key="i" :x1="r.x1" :x2="r.x2" :y1="r.y" :y2="r.y" />
+        <line
+          v-for="(r, i) in ringDraws"
+          :key="i"
+          :x1="r.x1"
+          :x2="r.x2"
+          :y1="r.y"
+          :y2="r.y"
+          :stroke="r.color"
+          :stroke-width="r.widthMm"
+          :stroke-dasharray="r.extra ? `${r.widthMm * 1.6} ${r.widthMm * 1.2}` : ''"
+        />
+        <text
+          v-for="(r, i) in ringDraws"
+          :key="'t' + i"
+          :x="r.x2 + 3"
+          :y="r.y + 2.6"
+          class="ring-tag"
+          :fill="r.color"
+        >
+          {{ r.label }}
+        </text>
       </g>
       <g class="corners">
         <line
@@ -275,6 +317,11 @@ const isoPaths = computed(() => {
           底口 ⌀{{ (g.sections[0].radiusMm * 2).toFixed(1) }} / 收口 ⌀{{
             (g.sections[g.sections.length - 1].radiusMm * 2).toFixed(1)
           }}mm
+        </text>
+        <text :x="sx(-g.maxR)" :y="20" class="dim-sub">
+          圈线宽=选定篾厚（1:1）：{{
+            [...new Set(ringDraws.map((r) => r.label))].join('　') || '—'
+          }}
         </text>
       </g>
 
@@ -314,27 +361,27 @@ const isoPaths = computed(() => {
           <line :x1="-g.maxR - 10" :x2="g.maxR + 10" :y1="0" :y2="0" />
           <line :x1="0" :x2="0" :y1="-g.maxR - 10" :y2="g.maxR + 10" />
         </g>
-        <g v-for="(s, i) in [...g.sections].reverse()" :key="i">
+        <g v-for="(s, i) in [...sectionRings].reverse()" :key="i">
           <polygon
             v-if="g.polygon"
             :points="
               Array.from({ length: g.n }, (_, k) => {
                 const a = -Math.PI / 2 + (2 * Math.PI * k) / g.n
-                return `${(s.radiusMm * Math.cos(a)).toFixed(2)},${(s.radiusMm * Math.sin(a)).toFixed(2)}`
+                return `${(s.r * Math.cos(a)).toFixed(2)},${(s.r * Math.sin(a)).toFixed(2)}`
               }).join(' ')
             "
             fill="none"
-            :stroke="i === g.sections.length - 1 ? '#7a2b1c' : 'rgba(122,43,28,0.35)'"
-            :stroke-width="i === g.sections.length - 1 ? 1.2 : 0.5"
-            :stroke-dasharray="i === 0 ? '' : '3 2'"
+            :stroke="s.stroke.color"
+            :stroke-width="s.stroke.widthMm"
+            :stroke-dasharray="s.extra ? `${s.stroke.widthMm * 2} ${s.stroke.widthMm * 1.4}` : ''"
           />
           <circle
             v-else
-            :r="s.radiusMm"
+            :r="s.r"
             fill="none"
-            :stroke="i === g.sections.length - 1 ? '#7a2b1c' : 'rgba(122,43,28,0.35)'"
-            :stroke-width="i === g.sections.length - 1 ? 1.2 : 0.5"
-            :stroke-dasharray="i === 0 ? '' : '3 2'"
+            :stroke="s.stroke.color"
+            :stroke-width="s.stroke.widthMm"
+            :stroke-dasharray="s.extra ? `${s.stroke.widthMm * 2} ${s.stroke.widthMm * 1.4}` : ''"
           />
         </g>
         <g class="ribs">
@@ -362,8 +409,9 @@ const isoPaths = computed(() => {
         :key="i"
         :points="r.join(' ')"
         fill="none"
-        stroke="rgba(122,43,28,0.7)"
-        stroke-width="0.8"
+        :stroke="isoPaths.meta[i]?.stroke.color || 'rgba(122,43,28,0.7)'"
+        :stroke-width="isoPaths.meta[i]?.stroke.widthMm || 0.8"
+        :stroke-dasharray="isoPaths.meta[i]?.extra ? '2 1.4' : ''"
       />
       <line
         v-for="(v, i) in isoPaths.verticals"
@@ -411,8 +459,14 @@ const isoPaths = computed(() => {
 
 .rings line {
   stroke: rgba(60, 30, 20, 0.75);
-  stroke-width: 0.7;
 }
+
+.ring-tag {
+  font-size: 6.2px;
+  font-family: 'JetBrains Mono', Consolas, monospace;
+}
+
+/* 各层圈截面线宽与颜色取自选型结论（1:1 mm） */
 
 .corners line {
   stroke: rgba(60, 30, 20, 0.3);

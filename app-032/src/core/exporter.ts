@@ -27,20 +27,24 @@ export function downloadText(filename: string, content: string, mime = 'text/csv
 export function membersCsv(l: Lantern, members: FrameMember[]): string {
   const rows: (string | number)[][] = [
     [`花灯构件清单 · ${l.name}`],
-    [`最大直径 ${l.maxDiameterMm}mm / 总高 ${l.totalHeightMm}mm / 绑扎余量 每端 ${l.lashAllowanceMm}mm / 生成 ${new Date().toLocaleString()}`],
+    [`最大直径 ${l.maxDiameterMm}mm / 总高 ${l.totalHeightMm}mm / 绑扎余量 每端 ${l.lashAllowanceMm}mm / 选型版次 R${l.selection?.revision ?? 0} / 生成 ${new Date().toLocaleString()}`],
     [],
-    ['构件名称', '类别', '分组', '净长(mm)', '截取长度(mm,含余量)', '余量处数', '数量', '总截取长度(mm)', '弯曲半径(mm)', '折角(°)', '备注']
+    ['构件名称', '类别', '分组', '规格档', '截面宽(mm)', '截面厚(mm)', '净长(mm)', '截取长度(mm,含余量)', '余量处数', '数量', '总截取长度(mm)', '单根重(g)', '弯曲半径(mm)', '折角(°)', '备注']
   ]
   for (const m of members) {
     rows.push([
       m.label,
       kindName(m.kind),
       m.group,
+      m.gradeId || '—',
+      m.widthMm ? m.widthMm.toFixed(1) : '—',
+      m.thicknessMm ? m.thicknessMm.toFixed(1) : '—',
       m.rawLengthMm.toFixed(1),
       m.lengthMm.toFixed(1),
       m.lashJoints,
       m.qty,
       (m.lengthMm * m.qty).toFixed(1),
+      m.massEachG ? m.massEachG.toFixed(1) : '—',
       m.bendRadiusMm ? m.bendRadiusMm.toFixed(1) : '—',
       m.bendAngleDeg ? m.bendAngleDeg.toFixed(1) : '—',
       m.note || ''
@@ -48,8 +52,9 @@ export function membersCsv(l: Lantern, members: FrameMember[]): string {
   }
   const stock = members.reduce((s, m) => s + m.lengthMm * m.qty, 0)
   const raw = members.reduce((s, m) => s + m.rawLengthMm * m.qty, 0)
+  const mass = members.reduce((s, m) => s + (m.massEachG || 0) * m.qty, 0)
   rows.push([])
-  rows.push(['合计', '', '', raw.toFixed(1), '', '', members.reduce((s, m) => s + m.qty, 0), stock.toFixed(1), '', '', `备料 ${(stock / 1000).toFixed(3)}m`])
+  rows.push(['合计', '', '', '', '', '', raw.toFixed(1), '', '', members.reduce((s, m) => s + m.qty, 0), stock.toFixed(1), mass.toFixed(1), '', '', `备料 ${(stock / 1000).toFixed(3)}m / 骨架自重 ${(mass / 1000).toFixed(3)}kg`])
   return toCsv(rows)
 }
 
@@ -87,7 +92,7 @@ export function materialsCsv(
   const cov = coveringSpec(l.covering)
   const rows: (string | number)[][] = [
     [`备料单 · ${l.name}`],
-    [`生成 ${new Date().toLocaleString()} / 单位 mm·m²·m·g`],
+    [`生成 ${new Date().toLocaleString()} / 单位 mm·m²·m·g·kg·N / 选型版次 R${l.selection?.revision ?? 0}（改直径/蒙面后未重新确认的备料单作废）`],
     [],
     ['项目', '单灯用量', '单位', `批量 ${batch.count} 个（含 ${(batch.wasteRatio * 100).toFixed(0)}% 损耗）`],
     ['竹篾/铁丝（含绑扎余量）', single.frameM.toFixed(3), 'm', batch.frameM.toFixed(3)],
@@ -98,9 +103,29 @@ export function materialsCsv(
     ['胶', single.glueG.toFixed(1), 'g', batch.glueG.toFixed(1)],
     ['LED 灯珠建议', single.ledCount, '颗', batch.ledCount],
     [],
-    ['灯体体积', single.volumeL.toFixed(3), 'L', batch.volumeL.toFixed(3)],
-    ['灯体表面积', single.surfaceM2.toFixed(3), 'm²', batch.surfaceM2.toFixed(3)]
+    ['分规格竹篾用料（按选型核定同一份数）', '单灯长度(m)', '单灯重(g)', `批量 ${batch.count} 个长度(m)`]
   ]
+  for (const gl of single.gradeLengths) {
+    if (gl.lengthMm <= 0) continue
+    rows.push([
+      `${gl.grade.name} ${gl.grade.widthMm.toFixed(1)}×${gl.grade.thicknessMm.toFixed(1)}mm（${gl.grade.id}）`,
+      (gl.lengthMm / 1000).toFixed(3),
+      gl.massG.toFixed(1),
+      ((gl.lengthMm / 1000) * batch.count * (1 + batch.wasteRatio)).toFixed(3)
+    ])
+  }
+  rows.push([])
+  rows.push(['重量账（逐层合计与总重一致，CHK-11）', '单灯(g)', '', `批量 ${batch.count} 个(g)`])
+  rows.push(['竹篾骨架自重', single.frameMassG.toFixed(1), 'g', batch.frameMassG.toFixed(1)])
+  rows.push(['蒙面材料重（含缝份）', single.coveringMassG.toFixed(1), 'g', batch.coveringMassG.toFixed(1)])
+  rows.push(['扎线重', single.threadMassG.toFixed(1), 'g', batch.threadMassG.toFixed(1)])
+  rows.push(['LED 重', single.ledMassG.toFixed(1), 'g', batch.ledMassG.toFixed(1)])
+  rows.push(['整灯总重', single.totalMassG.toFixed(1), 'g', batch.totalMassG.toFixed(1)])
+  rows.push(['整灯总重', single.totalMassKg.toFixed(3), 'kg', batch.totalMassKg.toFixed(3)])
+  rows.push(['整灯总重换算受力', single.totalWeightN.toFixed(2), 'N', batch.totalWeightN.toFixed(2)])
+  rows.push([])
+  rows.push(['灯体体积', single.volumeL.toFixed(3), 'L', batch.volumeL.toFixed(3)])
+  rows.push(['灯体表面积', single.surfaceM2.toFixed(3), 'm²', batch.surfaceM2.toFixed(3)])
   return toCsv(rows)
 }
 

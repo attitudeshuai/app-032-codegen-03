@@ -63,6 +63,10 @@ export interface Lantern {
   pageSize: PageSize
   /** 长条图跨页搭接量（mm） */
   overlapMm: number
+  /** 竹篾规格选型核定状态 */
+  selection: StripSelection
+  /** 已导出备料单/构件清单登记（选型翻版后旧单作废） */
+  exportRecords: ExportRecord[]
   createdAt: string
   updatedAt: string
 }
@@ -86,6 +90,18 @@ export interface FrameMember {
   group: string
   /** 每根含几处绑扎余量 */
   lashJoints: number
+  /** 选型核定：规格档 id（G1~G7） */
+  gradeId?: string
+  /** 选型核定：截面宽 mm（1 位小数） */
+  widthMm?: number
+  /** 选型核定：截面厚 mm（1 位小数） */
+  thicknessMm?: number
+  /** 选型核定：所属层索引（横篾圈/竖篾），-1 为收口/底盘/机构 */
+  layerIndex?: number
+  /** 选型核定：0=原有圈，1+=补加的横篾圈（道序） */
+  extraCourse?: number
+  /** 单根篾重 g（按选定截面与截取长度） */
+  massEachG?: number
   note?: string
 }
 
@@ -135,6 +151,62 @@ export interface MaterialTally {
   glueG: number
   /** LED 灯珠建议数量 */
   ledCount?: number
+}
+
+/** 选型判定方式：全灯统一最不利一档 / 逐层各选一档 */
+export type SelectionMode = 'uniform' | 'perlayer'
+
+/** 已确认基线快照（结构与 core/selection 的 SelectionSnapshot 一致；只用于重算对照） */
+export interface SelectionSnapshotShape {
+  revision: number
+  signature: string
+  confirmedAt: string
+  mode: SelectionMode
+  ribGrade: string
+  ringGrades: string[]
+  extraRings: number[]
+  frameMm: number
+  frameRawMm: number
+  frameMassG: number
+  covering: Covering
+  coveringM2: number
+  members: { label: string; gradeId: string; widthMm: number; thicknessMm: number; extraCourse: number; lengthTotalMm: number }[]
+  gradeLengths: Record<string, number>
+  layerRings: { band: number; bottomNodeGrade: string; topNodeGrade: string; extras: number }[]
+  checks: { c9: boolean; c10: boolean; c11: boolean }
+}
+
+/**
+ * 竹篾规格选型状态（存在灯样上，同一份结论供四处使用）
+ * - mode：判定方式；ribGrade：竖篾档（逐层模式也只有一档竖篾）
+ * - ringGrades：各节点圈档（长度 = layers 数 +1，底盘→收口）
+ * - extraRings：每一层（band）补加横篾圈道数（长度 = layers 数）
+ * - revision：确认版次，翻一次结论 +1，旧版构件表/余量/受力结论即失效
+ * - confirmedSignature：确认时灯样关键参数指纹；与当前不一致即「改了参数，结论待重算确认」
+ */
+export interface StripSelection {
+  mode: SelectionMode
+  ribGrade: string
+  ringGrades: string[]
+  extraRings: number[]
+  revision: number
+  confirmedSignature: string
+  confirmedAt: string
+  /** 最近一次被放弃方案让出的代价说明（模式切换/重选时记录） */
+  abandonedPathNote: string
+  /** 已确认基线快照（重算对照用；存本机，不参与几何计算） */
+  baseline?: import('./types').SelectionSnapshotShape
+}
+
+/** 已导出备料单登记（存在灯样上；选型翻版后旧单标记作废） */
+export interface ExportRecord {
+  kind: 'materials' | 'members' | 'panels'
+  filename: string
+  at: string
+  revision: number
+  signature: string
+  /** true = 选型翻版或参数改动后已作废 */
+  voided: boolean
 }
 
 /** 构件与裁片的自检结果（对应规格书 §10） */
