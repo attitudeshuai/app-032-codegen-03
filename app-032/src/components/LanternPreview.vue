@@ -1,8 +1,13 @@
 <script setup lang="ts">
-/** 灯体预览：正视 / 俯视 / 等轴测示意（不做 3D 渲染，等轴测为线框投影） */
+/** 灯体预览：正视 / 俯视 / 等轴测示意（不做 3D 渲染，等轴测为线框投影）
+ * 各层横篾圈按选型核定结论重画：位置取自选型圈道（轮廓同一参数），
+ * 线宽=选定厚（缩放显示）、色=选定档，线端画该圈截面（宽×厚）。 */
 import { computed, ref } from 'vue'
 import type { Lantern } from '../core/types'
 import { buildGeometry, radiusAtY, segmentInfos, topShoulder } from '../core/geometry'
+import { computeSizing } from '../core/sizing'
+import { BAMBOO } from '../core/craft'
+import type { RingPosition } from '../core/layout'
 
 const props = defineProps<{
   lantern: Lantern
@@ -12,7 +17,43 @@ const props = defineProps<{
 const emit = defineEmits<{ (e: 'update-ctrl', v: { which: 1 | 2; x: number; y: number }): void }>()
 
 const g = computed(() => buildGeometry(props.lantern))
+const sizing = computed(() => computeSizing(props.lantern))
+/** 预览各层圈：取选型结论的同一组数（道数/截面），不再用未选型的 sections */
+const ringPositions = computed<RingPosition[]>(() =>
+  sizing.value.polyhedron ? [] : sizing.value.layout.rings
+)
 const dragging = ref<0 | 1 | 2>(0)
+
+/** 档色（6 档：薄→特粗，由浅到深） */
+const GRADE_COLORS = ['#7f9d5a', '#4f8a6b', '#2f7a63', '#b8862e', '#c15a2b', '#9c3a2a']
+function gradeIndexOf(ring: RingPosition): number {
+  const id = sizing.value.choice.layerGradeIds[ring.layerIndex]
+  return Math.max(0, BAMBOO.grades.findIndex((x) => x.id === id))
+}
+function ringColor(ring: RingPosition): string {
+  return GRADE_COLORS[gradeIndexOf(ring)]
+}
+function ringThickness(ring: RingPosition): number {
+  return sizing.value.layerGrades[ring.layerIndex]?.thicknessMm ?? 2
+}
+function ringWidth(ring: RingPosition): number {
+  return sizing.value.layerGrades[ring.layerIndex]?.widthMm ?? 5
+}
+/** 正视圈线宽：1mm 篾厚按 0.45 视觉系数缩放，落在 0.6~3.2 之间 */
+function ringStroke(ring: RingPosition): number {
+  return Math.min(3.2, Math.max(0.6, ringThickness(ring) * 0.45))
+}
+
+/** 图例：本灯实际用到的档（去重保序） */
+const legendGrades = computed<number[]>(() => {
+  const out: number[] = []
+  for (const id of sizing.value.choice.layerGradeIds) {
+    const gi = Math.max(0, BAMBOO.grades.findIndex((x) => x.id === id))
+    if (!out.includes(gi)) out.push(gi)
+  }
+  return out.sort((a, b) => a - b)
+})
+const legendW = 96
 
 const PAD = 46
 const viewBox = computed(() => {
@@ -68,16 +109,20 @@ const outlinePath = computed(() => {
   return `M ${right.join(' L ')} L ${left.join(' L ')} Z`
 })
 
-const rings = computed(() => {
-  const geo = g.value
-  return geo.sections.map((s) => ({
-    y: sy(s.yMm),
-    x1: sx(-s.radiusMm),
-    x2: sx(s.radiusMm),
-    r: s.radiusMm,
-    label: s.index === 0 ? '底' : s.index === geo.sections.length - 1 ? '口' : String(s.index)
+const rings = computed(() =>
+  ringPositions.value.map((ring) => ({
+    ring,
+    y: sy(ring.yMm),
+    x1: sx(-ring.radiusMm),
+    x2: sx(ring.radiusMm),
+    r: ring.radiusMm,
+    color: ringColor(ring),
+    sw: ringStroke(ring),
+    thick: ringThickness(ring),
+    wide: ringWidth(ring),
+    label: ring.isBase ? '底' : ring.isMouth ? '口' : `${ring.layerIndex + 1}-${ring.courseNo}`
   }))
-})
+)
 
 /** 棱柱可见棱线（前后面投影） */
 const cornerLines = computed(() => {
@@ -149,15 +194,18 @@ function endDrag() {
   dragging.value = 0
 }
 
-/** 等轴测线框投影 */
+/** 等轴测线框投影（圈道与截面取选型结论） */
 const isoProjection = computed(() => {
   const geo = g.value
   const n = geo.polygon ? geo.n : Math.max(12, geo.n)
-  const ringsPts = geo.sections.map((s) =>
+  const ringSecs = ringPositions.value.length
+    ? ringPositions.value.map((r) => ({ yMm: r.yMm, radiusMm: r.radiusMm }))
+    : geo.sections
+  const ringsPts = ringSecs.map((s) =>
     Array.from({ length: n }, (_, k) => {
       const a = -Math.PI / 2 + (2 * Math.PI * k) / n
-      return { x: s.radiusMm * Math.cos(a), y: s.yMm, z: s.radiusMm * Math.sin(a) }
-    })
+      return { x: s.radiusMm, y: s.yMm, z: s.radiusMm, pt: { x: s.radiusMm * Math.cos(a), y: s.yMm, z: s.radiusMm * Math.sin(a) } }
+    }).map((q) => q.pt)
   )
   const proj = (p: { x: number; y: number; z: number }) => ({
     X: (p.x - p.z) * 0.866,
@@ -193,6 +241,9 @@ const isoPaths = computed(() => {
     const s = p.proj(q)
     return `${s.X.toFixed(2)},${s.Y.toFixed(2)}`
   }))
+  const ringColors = ringPositions.value.length
+    ? ringPositions.value.map((r) => ringColor(r))
+    : rings.map(() => 'rgba(122,43,28,0.7)')
   const verticals: string[] = []
   const n = p.ringsPts[0]?.length || 0
   for (let k = 0; k < n; k++) {
@@ -204,7 +255,7 @@ const isoPaths = computed(() => {
   }
   const topRing = rings[rings.length - 1]
   const bottomRing = rings[0]
-  return { rings, verticals, bottomFill: bottomRing.join(' L '), topFill: topRing.join(' L ') }
+  return { rings, ringColors, verticals, bottomFill: bottomRing.join(' L '), topFill: topRing.join(' L ') }
 })
 </script>
 
@@ -239,7 +290,39 @@ const isoPaths = computed(() => {
       <path :d="outlinePath" fill="none" stroke="#7a2b1c" stroke-width="1.1" />
 
       <g class="rings">
-        <line v-for="(r, i) in rings" :key="i" :x1="r.x1" :x2="r.x2" :y1="r.y" :y2="r.y" />
+        <line
+          v-for="(r, i) in rings"
+          :key="i"
+          :x1="r.x1"
+          :x2="r.x2"
+          :y1="r.y"
+          :y2="r.y"
+          :stroke="r.color"
+          :stroke-width="r.sw"
+        />
+        <!-- 选定截面：在圈两端画宽×厚小矩形（正视厚×宽） -->
+        <rect
+          v-for="(r, i) in rings"
+          :key="'e' + i"
+          :x="r.x1 - r.wide / 2"
+          :y="r.y - r.thick / 2"
+          :width="r.wide"
+          :height="r.thick"
+          :fill="r.color"
+          opacity="0.92"
+        >
+          <title>{{ r.label }}：{{ r.thick.toFixed(1) }}×{{ r.wide.toFixed(1) }}mm</title>
+        </rect>
+        <rect
+          v-for="(r, i) in rings"
+          :key="'e2' + i"
+          :x="r.x2 - r.wide / 2"
+          :y="r.y - r.thick / 2"
+          :width="r.wide"
+          :height="r.thick"
+          :fill="r.color"
+          opacity="0.92"
+        />
       </g>
       <g class="corners">
         <line
@@ -278,6 +361,18 @@ const isoPaths = computed(() => {
         </text>
       </g>
 
+      <!-- 选型截面图例 -->
+      <g class="legend" v-if="ringPositions.length">
+        <rect x="6" y="6" :width="legendW" height="14 + 10 * legendGrades.length" rx="2" fill="rgba(255,253,247,0.88)" stroke="rgba(120,100,70,0.4)" stroke-width="0.3" />
+        <text x="10" y="14" class="legend-title">圈篾选型（宽厚 mm）</text>
+        <g v-for="(gi, k) in legendGrades" :key="gi">
+          <rect x="10" :y="18 + 10 * k" :width="9" :height="4" :fill="GRADE_COLORS[gi]" />
+          <text x="22" :y="22 + 10 * k" class="legend-text">
+            {{ BAMBOO.grades[gi].name }} {{ BAMBOO.grades[gi].widthMm.toFixed(1) }}×{{ BAMBOO.grades[gi].thicknessMm.toFixed(1) }}
+          </text>
+        </g>
+      </g>
+
       <!-- 收口贝塞尔控制点（葫芦/花瓶形可拖动） -->
       <g v-if="shoulder" class="ctrl">
         <line :x1="sx(shoulder.p0.x)" :y1="sy(shoulder.p0.y)" :x2="sx(shoulder.p1.x)" :y2="sy(shoulder.p1.y)" />
@@ -314,27 +409,27 @@ const isoPaths = computed(() => {
           <line :x1="-g.maxR - 10" :x2="g.maxR + 10" :y1="0" :y2="0" />
           <line :x1="0" :x2="0" :y1="-g.maxR - 10" :y2="g.maxR + 10" />
         </g>
-        <g v-for="(s, i) in [...g.sections].reverse()" :key="i">
+        <g v-for="(ring, i) in ringPositions" :key="i">
           <polygon
             v-if="g.polygon"
             :points="
               Array.from({ length: g.n }, (_, k) => {
                 const a = -Math.PI / 2 + (2 * Math.PI * k) / g.n
-                return `${(s.radiusMm * Math.cos(a)).toFixed(2)},${(s.radiusMm * Math.sin(a)).toFixed(2)}`
+                return `${(ring.radiusMm * Math.cos(a)).toFixed(2)},${(ring.radiusMm * Math.sin(a)).toFixed(2)}`
               }).join(' ')
             "
             fill="none"
-            :stroke="i === g.sections.length - 1 ? '#7a2b1c' : 'rgba(122,43,28,0.35)'"
-            :stroke-width="i === g.sections.length - 1 ? 1.2 : 0.5"
-            :stroke-dasharray="i === 0 ? '' : '3 2'"
+            :stroke="ringColor(ring)"
+            :stroke-width="Math.max(0.6, ringThickness(ring) / 4)"
+            :stroke-dasharray="ring.isBase ? '' : '3 2'"
           />
           <circle
             v-else
-            :r="s.radiusMm"
+            :r="ring.radiusMm"
             fill="none"
-            :stroke="i === g.sections.length - 1 ? '#7a2b1c' : 'rgba(122,43,28,0.35)'"
-            :stroke-width="i === g.sections.length - 1 ? 1.2 : 0.5"
-            :stroke-dasharray="i === 0 ? '' : '3 2'"
+            :stroke="ringColor(ring)"
+            :stroke-width="Math.max(0.6, ringThickness(ring) / 4)"
+            :stroke-dasharray="ring.isBase ? '' : '3 2'"
           />
         </g>
         <g class="ribs">
@@ -362,7 +457,7 @@ const isoPaths = computed(() => {
         :key="i"
         :points="r.join(' ')"
         fill="none"
-        stroke="rgba(122,43,28,0.7)"
+        :stroke="isoPaths.ringColors[i]"
         stroke-width="0.8"
       />
       <line
@@ -412,6 +507,17 @@ const isoPaths = computed(() => {
 .rings line {
   stroke: rgba(60, 30, 20, 0.75);
   stroke-width: 0.7;
+}
+
+.legend-title {
+  font-size: 7px;
+  fill: #5a4a3a;
+  font-weight: 700;
+}
+
+.legend-text {
+  font-size: 7px;
+  fill: #4a3c30;
 }
 
 .corners line {

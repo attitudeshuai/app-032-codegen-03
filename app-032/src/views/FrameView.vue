@@ -2,6 +2,8 @@
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import ChecksPanel from '../components/ChecksPanel.vue'
+import SizingConsole from '../components/SizingConsole.vue'
+import SizingChangeReport from '../components/SizingChangeReport.vue'
 import { getLantern } from '../core/store'
 import { computeAll } from '../core/checks'
 import { DEFAULT_LOFT_OPTIONS } from '../core/paginate'
@@ -19,6 +21,8 @@ const full = computed(() => {
   return computeAll(l, { ...DEFAULT_LOFT_OPTIONS, paper: l.pageSize, overlapMm: l.overlapMm })
 })
 const groups = computed(() => (full.value ? groupMembers(full.value.frame.members) : []))
+/** 未核定（或结论已作废）时不允许导出下料用清单 */
+const exportLocked = computed(() => !lantern.value?.sizing?.accepted || !full.value?.sizing.passed)
 
 function bendText(m: FrameMember): string {
   if (m.bendRadiusMm) return `R${m.bendRadiusMm.toFixed(1)}mm`
@@ -26,9 +30,18 @@ function bendText(m: FrameMember): string {
   return '—'
 }
 
+function crossText(m: FrameMember): string {
+  if (!m.widthMm) return '—'
+  return `${m.widthMm.toFixed(1)}×${m.thicknessMm!.toFixed(1)}`
+}
+
 function exportCsv() {
   const l = lantern.value
   if (!l || !full.value) return
+  if (exportLocked.value) {
+    window.alert('当前选型尚未核定通过（或参数已变导致旧版结论作废）：导出的备料单不能作为下料依据，请先在「竹篾规格选型核定」里核定此规格。')
+    return
+  }
   downloadText(`${l.name}-构件清单.csv`, membersCsv(l, full.value.frame.members))
 }
 </script>
@@ -45,13 +58,21 @@ function exportCsv() {
           {{ lantern.layers.length }} 层 · {{ lantern.sides }} 棱 ·
           每根篾两端各留 <b>{{ lantern.lashAllowanceMm }}mm</b> 绑扎余量，
           横篾圈接头处（圆形 1 处 / 多边形 {{ lantern.sides }} 处）同样加余量。
+          <b>宽厚与圈道按「竹篾规格选型核定」的同一组数重建，截面单位 mm（1 位小数）。</b>
         </p>
       </div>
       <div class="ops">
-        <button @click="exportCsv">导出构件清单 CSV</button>
+        <button @click="exportCsv" :class="{ locked: exportLocked }">导出构件清单 CSV</button>
         <button class="primary" @click="router.push(`/print/${lantern.id}?view=frame`)">打印构件清单</button>
       </div>
     </section>
+
+    <p v-if="exportLocked" class="lock-banner">
+      ⛔ 当前规格未核定通过或已被参数改动作废：构件表只供参考，导出/下料已拦住。请先完成下方选型核定。
+    </p>
+
+    <SizingConsole v-if="full" :lantern="lantern" :sizing="full.sizing" />
+    <SizingChangeReport v-if="full" :lantern="lantern" :diff="full.sizingDiff" scope="frame" />
 
     <section class="stats">
       <div class="stat"><span>构件总根数</span><b>{{ full.frame.totalQty }}</b></div>
@@ -67,6 +88,7 @@ function exportCsv() {
           <tr>
             <th>构件名称</th>
             <th>类别</th>
+            <th class="num">截面宽×厚 (mm)</th>
             <th class="num">净长 (mm)</th>
             <th class="num">截取长度 (mm，含余量)</th>
             <th class="num">余量处数</th>
@@ -80,6 +102,7 @@ function exportCsv() {
           <tr v-for="m in grp.items" :key="m.id">
             <td class="name">{{ m.label }}</td>
             <td>{{ kindName(m.kind) }}</td>
+            <td class="num mono grade-cell">{{ m.gradeName ? `${crossText(m)}` : '—' }}<small v-if="m.gradeName">（{{ m.gradeName }}）</small></td>
             <td class="num mono">{{ m.rawLengthMm.toFixed(1) }}</td>
             <td class="num mono strong">{{ m.lengthMm.toFixed(1) }}</td>
             <td class="num mono">×{{ m.lashJoints }}</td>
@@ -93,9 +116,9 @@ function exportCsv() {
     </section>
 
     <ChecksPanel
-      :checks="full.checks.filter((c) => ['CHK-01', 'CHK-02', 'CHK-04', 'CHK-08'].includes(c.id))"
+      :checks="full.checks.filter((c) => ['CHK-01', 'CHK-02', 'CHK-04', 'CHK-08', 'CHK-09', 'CHK-10', 'CHK-11'].includes(c.id))"
       :elapsed-ms="full.elapsedMs"
-      title="骨架计算自检"
+      title="骨架计算与选型自检"
     />
   </div>
 </template>
@@ -251,6 +274,32 @@ tr:last-child td {
 
 .name {
   font-weight: 600;
+}
+
+.grade-cell {
+  color: #2f5f8a;
+  white-space: nowrap;
+}
+
+.grade-cell small {
+  display: block;
+  color: var(--ink-soft);
+  font-weight: 400;
+}
+
+.lock-banner {
+  margin: 0;
+  padding: 9px 12px;
+  font-size: 12.5px;
+  color: #8f1c19;
+  background: #fdecea;
+  border: 1px solid #e3a6a0;
+  border-radius: 8px;
+}
+
+button.locked {
+  border-style: dashed;
+  color: #a85a52;
 }
 
 .note {

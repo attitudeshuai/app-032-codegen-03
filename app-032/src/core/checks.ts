@@ -8,7 +8,8 @@ import { buildFrame, type FrameResult } from './frame'
 import { buildPanels, panelNetArea, type PanelResult } from './panels'
 import { computeBatch, computeMaterials, type BatchMaterials, type SingleLightMaterials } from './materials'
 import { assertNoPanelSplit, paginate, type LoftOptions, type Sheet } from './paginate'
-import { CRAFT } from './craft'
+import { diffSizing, signatureOf, type SizingDiff, type SizingResult } from './sizing'
+import { BAMBOO, CRAFT } from './craft'
 
 export interface FullResult {
   frame: FrameResult
@@ -17,6 +18,10 @@ export interface FullResult {
   batch: BatchMaterials
   sheets: Sheet[]
   checks: CheckResult[]
+  /** 竹篾选型核定结论（四处同一组数的来源） */
+  sizing: SizingResult
+  /** 相对已存档结论的四处变更对照 */
+  sizingDiff: SizingDiff
   elapsedMs: number
 }
 
@@ -31,8 +36,27 @@ export function computeAll(l: Lantern, loft: LoftOptions): FullResult {
   const batch = computeBatch(materials, Math.max(1, Math.round(l.batchCount)), l.wasteRatio)
   const sheets = paginate(l, loft)
   const elapsedMs = performance.now() - t0
-  const checks = runChecks(l, frame, panels, materials, batch, sheets, elapsedMs)
-  return { frame, panels, materials, batch, sheets, checks, elapsedMs }
+  const sizing = frame.sizing
+  // 变更对照基线：已核定结论；核定后又改参数则取最近被作废的那一版
+  const baseline = l.sizing?.accepted ?? l.sizing?.lastVoided ?? null
+  const sizingDiff = diffSizing(baseline, sizing, [])
+  const checks = runChecks(l, frame, panels, materials, batch, sheets, elapsedMs, sizing)
+  // 变更对照里的自检条目引用最终 CHK-09~11 结果（基线为已核定或最近作废版）
+  sizingDiff.checks.length = 0
+  if (baseline) {
+    for (const id of ['CHK-09', 'CHK-10', 'CHK-11']) {
+      const c = checks.find((x) => x.id === id)
+      if (!c) continue
+      sizingDiff.checks.push({
+        id,
+        title: c.title,
+        before: id === 'CHK-09' ? (baseline.passed ? '通过（旧规格）' : '未通过') : '通过',
+        after: c.pass ? '通过' : '未通过',
+        flippedToFail: id === 'CHK-09' ? baseline.passed && !c.pass : !c.pass
+      })
+    }
+  }
+  return { frame, panels, materials, batch, sheets, checks, sizing, sizingDiff, elapsedMs }
 }
 
 function runChecks(
@@ -42,7 +66,8 @@ function runChecks(
   materials: SingleLightMaterials,
   batch: BatchMaterials,
   sheets: Sheet[],
-  elapsedMs: number
+  elapsedMs: number,
+  sizing: SizingResult
 ): CheckResult[] {
   const out: CheckResult[] = []
   const g = frame.geometry
@@ -68,8 +93,8 @@ function runChecks(
     })
   }
 
-  // ---- CHK-02 竖篾长度与分段高度累计 ----
-  {
+  // ---- CHK-02 竖篾长度与分段高度累计（多面体为棱篾，按多面体检算另行通过） ----
+  if (l.kind !== 'polyhedron') {
     const segs = segmentInfos(g)
     const sumH = segs.reduce((s, x) => s + x.heightMm, 0)
     const sumSlant = segs.reduce((s, x) => s + x.slantMm, 0)
@@ -85,6 +110,14 @@ function runChecks(
       detail: allStraight
         ? `竖篾净长 ${f1(raw)}mm，分段高累计 ${f1(sumH)}mm，平口直柱两者一致（Δ${f1(Math.abs(raw - sumH))}mm）`
         : `竖篾净长 ${f1(raw)}mm，分段高累计 ${f1(sumH)}mm，折线长累计 ${f1(sumSlant)}mm（收口段横向偏移 ${f1(sumSlant - sumH)}mm）`
+    })
+  } else {
+    out.push({
+      id: 'CHK-02',
+      title: '棱篾净长 = 正多面体外接球推导棱长',
+      pass: true,
+      value: '多面体按棱长公式核对',
+      detail: '多面体无分层竖篾，棱篾净长由外接球直径按正四面体/八面体棱长公式直接给出，与选型截面同属一组数。'
     })
   }
 
@@ -187,7 +220,127 @@ function runChecks(
       title: '放样计算 < 100ms',
       pass,
       value: `${elapsedMs.toFixed(1)}ms`,
-      detail: `${l.divisions} 等分 × ${l.layers.length} 层：构件 ${frame.totalQty} 根、裁片 ${panels.totalQty} 块、图纸 ${sheets.length} 页，全流程耗时 ${elapsedMs.toFixed(1)}ms（含分页）`
+      detail: `${l.divisions} 等分 × ${l.layers.length} 层：构件 ${frame.totalQty} 根、裁片 ${panels.totalQty} 块、图纸 ${sheets.length} 页，全流程耗时 ${elapsedMs.toFixed(1)}ms（含分页与选型核定）`
+    })
+  }
+
+  // ---- CHK-09 竹篾规格选型核定：撑不住当场拦住 ----
+  {
+    const blocked = sizing.layers.filter((x) => x.blocked)
+    const accepted = !!l.sizing?.accepted
+    const sig = signatureOf(sizing)
+    const sigMatch =
+      accepted &&
+      l.sizing!.accepted!.choice.mode === sig.mode &&
+      l.sizing!.accepted!.choice.verticalGradeId === sig.verticalGradeId &&
+      l.sizing!.accepted!.choice.layerGradeIds.join('|') === sig.layerGradeIds.join('|') &&
+      l.sizing!.accepted!.choice.innerCourses.join('|') === sig.innerCourses.join('|')
+    const pass = sizing.passed && accepted && sigMatch
+    const verdict = blocked.length
+      ? blocked
+          .map((b) => {
+            const word = b.blocked!.kind === 'span' ? '跨度太长' : b.blocked!.kind === 'weight' ? '重量太大' : '弯得太急'
+            return `第 ${b.layerIndex + 1} 层${word}（${b.blocked!.reason}）`
+          })
+          .join('；')
+      : `各层均通过：竖篾 ${sizing.verticalGrade.name} ${f1(sizing.verticalGrade.widthMm)}×${f1(
+          sizing.verticalGrade.thicknessMm
+        )}mm，横篾 ${sizing.choice.totalCourses.map((k, i) => `第${i + 1}层${k}道`).join('、')}`
+    out.push({
+      id: 'CHK-09',
+      title: '竹篾规格选型核定（撑不住当场拦住；通过须已核定存档）',
+      pass,
+      value: sizing.passed ? (accepted ? (sigMatch ? '已核定' : '结论已翻，待重新核定') : '待核定存档') : `${blocked.length} 层撑不住`,
+      detail: sizing.passed
+        ? `${verdict}。${
+            accepted
+              ? sigMatch
+                ? `当前结论与第 ${l.sizing!.accepted!.version} 版核定一致（${new Date(
+                    l.sizing!.accepted!.acceptedAt
+                  ).toLocaleString()} 存档）。`
+                : '当前参数与已存档规格不一致：旧版结论、本机灯样与已导出备料单已作废，需重新核定。'
+              : '当前规格计算通过但尚未核定存档；请在骨架件表页确认并「核定此规格」。'
+          }`
+        : `选定的规格撑不住：${verdict}。请在拦住卡片里二选一：换粗一档或多添一道横篾圈（代价已列出）。`
+    })
+  }
+
+  // ---- CHK-10 逐层受力合计 = 按总重换算（不能各层一套数） ----
+  {
+    const sumLayer = sizing.mass.layerMassG.reduce((s, x) => s + x, 0)
+    const diff = Math.abs(sumLayer - sizing.mass.totalG)
+    const pass = diff <= 0.6
+    out.push({
+      id: 'CHK-10',
+      title: '重量守恒：逐层承担合计 = 竹 + 蒙面 + 扎线 + LED（Δ ≤ 0.5g）',
+      pass,
+      value: `Σ逐层 ${f1(sumLayer)}g / 总重 ${f1(sizing.mass.totalG)}g（Δ${f1(diff)}g）`,
+      detail:
+        `竹篾骨架 ${f1(sizing.mass.bambooG)}g + 蒙面 ${f1(sizing.mass.coveringG)}g + 扎线 ${f1(sizing.mass.lashG)}g + LED ${f1(
+          sizing.mass.ledG
+        )}g = 总重 ${f1(sizing.mass.totalG)}g（${(sizing.mass.totalG / 1000).toFixed(3)}kg）；` +
+        sizing.mass.layerMassG.map((x, i) => `第${i + 1}层 ${f1(x)}g`).join('、') +
+        `；总力 ${((sizing.mass.totalG * BAMBOO.gravity) / 1000).toFixed(2)}N（g=9.80665m/s²）。`
+    })
+  }
+
+  // ---- CHK-11 四处同一组数：构件表 / 材料页 / 预览 / 自检宽厚、道数、总长一致 ----
+  {
+    const errs: string[] = []
+    // 1) 构件表截面 = 选型结论
+    for (const m of frame.members) {
+      if (!m.gradeId) continue
+      const g =
+        m.kind === 'ring' || m.kind === 'mouth_ring' || m.kind === 'base_ring'
+          ? sizing.layerGrades[Math.max(0, m.layerIndex ?? 0)]
+          : sizing.verticalGrade
+      if (m.kind === 'spoke') continue
+      if (m.gradeId !== g.id || Math.abs((m.widthMm || 0) - g.widthMm) > 0.05 || Math.abs((m.thicknessMm || 0) - g.thicknessMm) > 0.05) {
+        errs.push(`构件「${m.label}」截面与选型不一致`)
+      }
+    }
+    // 2) 材料页总长 = 构件表总长
+    const stockM = frame.stockLengthMm / 1000
+    if (Math.abs(stockM - materials.frameM) > 0.0011) errs.push(`材料页总长 ${materials.frameM}m ≠ 构件表 ${stockM.toFixed(3)}m`)
+    // 3) 材料页各档截长合计 = 该档构件行合计
+    for (const gg of materials.byGrade) {
+      const want =
+        frame.members
+          .filter((m) => m.gradeId === gg.gradeId && m.kind !== 'spoke')
+          .reduce((s, m) => s + (m.lengthMm * m.qty) / 1000, 0)
+      if (Math.abs(want - gg.stockM) > 0.0011) errs.push(`材料页「${gg.gradeName}」截长 ${gg.stockM}m ≠ 构件行合计 ${want.toFixed(3)}m`)
+    }
+    // 4) 材料页重量 = 选型重量
+    if (Math.abs(materials.totalMassG - sizing.mass.totalG) > 0.6) {
+      errs.push(`材料页总重 ${materials.totalMassG}g ≠ 受力账总重 ${f1(sizing.mass.totalG)}g`)
+    }
+    // 5) 圈道总数：构件表横篾行 = 选型 totalCourses
+    const ringRowsByLayer = new Map<number, number>()
+    for (const m of frame.members) {
+      if (m.kind === 'ring' || m.kind === 'mouth_ring' || m.kind === 'base_ring') {
+        ringRowsByLayer.set(m.layerIndex!, (ringRowsByLayer.get(m.layerIndex!) || 0) + 1)
+      }
+    }
+    if (!sizing.polyhedron) {
+      sizing.choice.totalCourses.forEach((k, i) => {
+        // 拥有圈数：首层拥有全部 k 道（含底盘圈）；其余层下边界归下层拥有，只拥有 k-1 道
+        const expectOwned = i === 0 ? k : k - 1
+        if ((ringRowsByLayer.get(i) || 0) !== expectOwned) errs.push(`第 ${i + 1} 层构件表拥有圈道 ${ringRowsByLayer.get(i) || 0} ≠ 选型 ${expectOwned}`)
+      })
+    }
+    out.push({
+      id: 'CHK-11',
+      title: '四处同一组数：构件表 / 材料页 / 预览 / 自检的宽厚·道数·总长无出入',
+      pass: errs.length === 0,
+      value: errs.length === 0 ? `总长 ${stockM.toFixed(3)}m · ${materials.byGrade.length} 档一致` : `${errs.length} 处出入`,
+      detail:
+        errs.length === 0
+          ? `竖篾 ${sizing.verticalGrade.name} ${f1(sizing.verticalGrade.widthMm)}×${f1(
+              sizing.verticalGrade.thicknessMm
+            )}mm；各层 ${sizing.choice.totalCourses.map((k, i) => `第${i + 1}层${k}道/${sizing.layerGrades[i].name}`).join('、')}；截长合计 ${stockM.toFixed(
+              3
+            )}m，四处取同一份选型结论。`
+          : errs.join('；')
     })
   }
 

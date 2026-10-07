@@ -1,9 +1,16 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import LanternPreview from '../components/LanternPreview.vue'
 import ChecksPanel from '../components/ChecksPanel.vue'
-import { getLantern, distributeLayers, syncLayerDiameters } from '../core/store'
+import SizingConsole from '../components/SizingConsole.vue'
+import SizingChangeReport from '../components/SizingChangeReport.vue'
+import {
+  distributeLayers,
+  getLantern,
+  invalidateAccepted,
+  syncLayerDiameters
+} from '../core/store'
 import { computeAll } from '../core/checks'
 import { DEFAULT_LOFT_OPTIONS } from '../core/paginate'
 import { buildGeometry, polyhedronInfo, r1 } from '../core/geometry'
@@ -26,6 +33,36 @@ const full = computed(() => {
   if (!l) return null
   return computeAll(l, loft.value)
 })
+
+// 已存档的关键参数：一旦改动即把旧版选型结论与已导出备料单作废
+watch(
+  () => {
+    const l = lantern.value
+    if (!l || !l.sizing?.accepted) return ''
+    return JSON.stringify([
+      l.maxDiameterMm,
+      l.totalHeightMm,
+      l.layers.map((x) => x.heightMm),
+      l.mouthDiameterMm,
+      l.baseDiameterMm,
+      l.sides,
+      l.mouthStyle,
+      l.bottomStyle,
+      l.smoothness,
+      l.divisions,
+      l.covering,
+      l.lashAllowanceMm,
+      l.seamAllowanceMm,
+      l.ctrl1,
+      l.ctrl2
+    ])
+  },
+  (next, prev) => {
+    const l = lantern.value
+    if (!l || !prev || !next) return
+    invalidateAccepted(l, '灯样参数变化', '最大直径/总高/分层/收口/蒙面等灯样参数已修改，整套受力估算与选型结论全部重算。')
+  }
+)
 
 const geo = computed(() => (lantern.value ? buildGeometry(lantern.value) : null))
 const shoulderPct = computed(() => (geo.value ? ((geo.value.kTop + geo.value.kBot) * 100).toFixed(0) : '0'))
@@ -352,6 +389,26 @@ function onCtrl(v: { which: 1 | 2; x: number; y: number }) {
         棱长 {{ poly.edgeMm.toFixed(1) }}mm，灯体总高 {{ poly.heightMm.toFixed(1) }}mm（由棱长推算）
       </p>
 
+      <SizingChangeReport v-if="full" :lantern="lantern" :diff="full.sizingDiff" scope="design" />
+
+      <div v-if="full" class="sizing-entry" :class="{ fail: !full.sizing.passed }">
+        <div class="se-head">
+          <h4>竹篾规格选型核定</h4>
+          <span class="tag" :class="full.sizing.passed ? 'ok' : 'no'">
+            {{ full.sizing.passed ? (lantern.sizing?.accepted ? '已核定 v' + lantern.sizing.accepted.version : '待核定') : `${full.sizing.blockedCount} 层撑不住` }}
+          </span>
+        </div>
+        <p class="se-line">
+          <template v-if="full">
+            竖篾 <b>{{ full.sizing.verticalGrade.name }} {{ full.sizing.verticalGrade.widthMm.toFixed(1) }}×{{ full.sizing.verticalGrade.thicknessMm.toFixed(1) }}mm</b>
+            ｜各层横篾
+            <template v-for="(k, i) in full.sizing.choice.totalCourses" :key="i">第{{ i + 1 }}层{{ k }}道 {{ full.sizing.layerGrades[i].name }} </template>
+            ｜灯体总重 {{ full.sizing.mass.totalG.toFixed(1) }}g（{{ (full.sizing.mass.totalG / 1000).toFixed(3) }}kg）
+          </template>
+        </p>
+        <SizingConsole :lantern="lantern" :sizing="full.sizing" compact />
+      </div>
+
       <div v-if="panelsPreview.length" class="mini">
         <h4>裁片概览（详见「蒙面裁片」页）</h4>
         <ul>
@@ -632,6 +689,54 @@ button:hover {
   padding: 10px 14px;
   font-size: 12px;
   color: var(--ink-soft);
+}
+
+.sizing-entry {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.se-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.se-head h4 {
+  margin: 0;
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.tag {
+  font-size: 11px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-family: var(--mono);
+}
+
+.tag.ok {
+  background: #e3f1ea;
+  color: var(--jade);
+  border: 1px solid #cbe3d8;
+}
+
+.tag.no {
+  background: #fadbd6;
+  color: var(--red);
+  border: 1px solid #f2c7c1;
+}
+
+.se-line {
+  margin: 0;
+  font-size: 12px;
+  color: var(--ink-soft);
+  line-height: 1.6;
+}
+
+.se-line b {
+  color: #8f1c19;
 }
 
 .mini h4 {

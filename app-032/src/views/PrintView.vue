@@ -576,6 +576,7 @@ function today(): string {
         {{ lantern.totalHeightMm }}mm · {{ lantern.layers.length }} 层 · {{ lantern.sides }} 棱 ·
         收口 {{ styleLabel(lantern.mouthStyle) }}/{{ styleLabel(lantern.bottomStyle) }} ·
         每端绑扎余量 {{ lantern.lashAllowanceMm }}mm · 蒙面 {{ coveringLabel(lantern.covering) }} ·
+        选型版本 {{ lantern.sizing?.accepted ? 'v' + lantern.sizing.accepted.version + '（已核定）' : '未核定，不得下料' }} ·
         打印日期 {{ today() }}
       </p>
       <table class="doc-table">
@@ -584,6 +585,7 @@ function today(): string {
             <th>构件名称</th>
             <th>类别</th>
             <th>分组</th>
+            <th class="num">截面宽×厚(mm)</th>
             <th class="num">净长 (mm)</th>
             <th class="num">截取长度 (mm，含余量)</th>
             <th class="num">余量处数</th>
@@ -595,12 +597,13 @@ function today(): string {
         <tbody>
           <template v-for="grp in frameGroups" :key="grp.group">
             <tr class="doc-group">
-              <td colspan="9">{{ grp.group }}</td>
+              <td colspan="10">{{ grp.group }}</td>
             </tr>
             <tr v-for="m in grp.items" :key="m.id">
               <td>{{ m.label }}</td>
               <td>{{ kindName(m.kind) }}</td>
               <td>{{ m.group }}</td>
+              <td class="num mono">{{ m.widthMm ? `${f1(m.widthMm)}×${f1(m.thicknessMm!)}` : '—' }}</td>
               <td class="num mono">{{ f1(m.rawLengthMm) }}</td>
               <td class="num mono strong">{{ f1(m.lengthMm) }}</td>
               <td class="num mono">×{{ m.lashJoints }}</td>

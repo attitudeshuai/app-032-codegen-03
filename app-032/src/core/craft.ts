@@ -6,9 +6,47 @@ export interface CoveringSpec {
   id: Covering
   name: string
   gluePerM2: number
+  /** 蒙面克重（g/m²） */
+  massPerM2: number
   wasteRatio: number
   color: string
   note: string
+}
+
+/** 竹篾规格档：截面宽×厚（mm，1 位小数） */
+export interface BambooGrade {
+  id: string
+  name: string
+  widthMm: number
+  thicknessMm: number
+}
+
+export interface BambooCraft {
+  /** 竹材密度（g/mm³ ≈ 0.75g/cm³） */
+  densityGPerMm3: number
+  /** 许用弯曲应力（N/mm² ≈ MPa，顺纹弯） */
+  allowableBendingNPerMm2: number
+  /** 顺纹抗弯弹性模量（N/mm²） */
+  elasticModulusNPerMm2: number
+  /** 许用弯形应变（冷弯；t ≤ ε·R），适用于灯身圆肚圈 */
+  allowableStrain: number
+  /** 口部圈经加湿/加热后的许用弯形应变（上口圈专用） */
+  allowableStrainMouth: number
+  /** 挠度限值系数：δ ≤ L / deflectionRatio */
+  deflectionRatio: number
+  /** 蒙面竖向荷载分给竖篾的比例（其余落在横篾圈上） */
+  coverLoadShareToRibs: number
+  gravity: number
+  maxCourses: number
+  /** 扎线每米重量（g/m） */
+  lashMassPerM: number
+  grades: BambooGrade[]
+}
+
+export const BAMBOO = raw.bamboo as BambooCraft
+
+export function bambooGrade(id: string): BambooGrade {
+  return BAMBOO.grades.find((g) => g.id === id) || BAMBOO.grades[0]
 }
 
 export interface PresetParams {
@@ -46,7 +84,7 @@ export const CRAFT = raw.craft as {
   divMin: number
   divMax: number
   lashPerJointM: number
-  led: { perLiter: number; min: number; rule: string }
+  led: { perLiter: number; min: number; massPerUnitG: number; rule: string }
 }
 
 export const COVERINGS = raw.coverings as CoveringSpec[]

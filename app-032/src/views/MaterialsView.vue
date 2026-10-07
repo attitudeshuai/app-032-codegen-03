@@ -2,6 +2,7 @@
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import ChecksPanel from '../components/ChecksPanel.vue'
+import SizingChangeReport from '../components/SizingChangeReport.vue'
 import { getLantern } from '../core/store'
 import { computeAll } from '../core/checks'
 import { DEFAULT_LOFT_OPTIONS } from '../core/paginate'
@@ -19,6 +20,7 @@ const full = computed(() => {
 })
 
 const cov = computed(() => (lantern.value ? coveringSpec(lantern.value.covering) : null))
+const exportLocked = computed(() => !lantern.value?.sizing?.accepted || !full.value?.sizing.passed)
 
 const layerFabric = computed(() => {
   const l = lantern.value
@@ -34,7 +36,12 @@ const layerFabric = computed(() => {
       kinds: ps.length,
       perPiece: ps.length ? panelCutArea(ps[0]) : 0,
       qty: ps.reduce((s, p) => s + p.qty, 0),
-      areaM2: area / 1e6
+      areaM2: area / 1e6,
+      layerMassG: full.value!.sizing.mass.layerMassG[i] || 0,
+      courses: full.value!.sizing.choice.totalCourses[i],
+      gradeName: full.value!.sizing.layerGrades[i]?.name || '',
+      gradeW: full.value!.sizing.layerGrades[i]?.widthMm || 0,
+      gradeT: full.value!.sizing.layerGrades[i]?.thicknessMm || 0
     }
   })
 })
@@ -42,6 +49,10 @@ const layerFabric = computed(() => {
 function exportCsv() {
   const l = lantern.value
   if (!l || !full.value) return
+  if (exportLocked.value) {
+    window.alert('当前选型尚未核定通过（或旧版结论已作废）：备料单不能作为下料依据，请先回到「骨架件表」页核定规格。')
+    return
+  }
   downloadText(`${l.name}-备料单.csv`, materialsCsv(l, full.value.materials, full.value.batch))
 }
 </script>
@@ -58,9 +69,24 @@ function exportCsv() {
         </p>
       </div>
       <div class="ops">
-        <button @click="exportCsv">导出备料单 CSV</button>
+        <button @click="exportCsv" :class="{ locked: exportLocked }">导出备料单 CSV</button>
         <button class="primary" @click="router.push(`/print/${lantern.id}?view=frame`)">打印备料 / 清单</button>
       </div>
+    </section>
+
+    <p v-if="exportLocked" class="lock-banner">
+      ⛔ 当前选型未核定通过或已被参数改动作废：备料统计仅供参考，导出已拦住。核定通过后才能按此备料下料。
+    </p>
+
+    <SizingChangeReport v-if="full" :lantern="lantern" :diff="full.sizingDiff" scope="materials" />
+
+    <section class="mass-bar">
+      <div class="mb"><span>竹篾骨架</span><b>{{ full.materials.bambooMassG.toFixed(1) }} g</b></div>
+      <div class="mb"><span>蒙面（{{ cov.name }} {{ cov.massPerM2 }}g/m²）</span><b>{{ full.materials.coveringMassG.toFixed(1) }} g</b></div>
+      <div class="mb"><span>扎线</span><b>{{ full.materials.lashMassG.toFixed(1) }} g</b></div>
+      <div class="mb"><span>LED 含线</span><b>{{ full.materials.ledMassG.toFixed(1) }} g</b></div>
+      <div class="mb total"><span>灯体总重</span><b>{{ full.materials.totalMassG.toFixed(1) }} g ＝ {{ (full.materials.totalMassG / 1000).toFixed(3) }} kg</b></div>
+      <div class="mb force"><span>总重力</span><b>{{ ((full.materials.totalMassG * 9.80665) / 1000).toFixed(2) }} N</b></div>
     </section>
 
     <section class="batch">
@@ -134,6 +160,32 @@ function exportCsv() {
       </div>
     </section>
 
+    <section class="grades">
+      <h3>竹篾按选型截面分档备料（每根篾截取长度 × 数量，与构件表同一组数）</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>档名</th>
+            <th class="num">截面宽×厚 (mm)</th>
+            <th class="num">单灯截取总长 (m)</th>
+            <th class="num">单灯竹重 (g)</th>
+            <th class="num">批量截取总长 (m)</th>
+            <th class="num">批量竹重 (g)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="g in full.materials.byGrade" :key="g.gradeId">
+            <td>{{ g.gradeName }}</td>
+            <td class="num mono">{{ g.widthMm.toFixed(1) }}×{{ g.thicknessMm.toFixed(1) }}</td>
+            <td class="num mono">{{ g.stockM.toFixed(3) }}</td>
+            <td class="num mono">{{ g.massG.toFixed(1) }}</td>
+            <td class="num mono strong">{{ (g.stockM * full.batch.count * (1 + full.batch.wasteRatio)).toFixed(3) }}</td>
+            <td class="num mono strong">{{ (g.massG * full.batch.count * (1 + full.batch.wasteRatio)).toFixed(1) }}</td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
     <section class="palette">
       <h3>分层蒙面用量（按层买布/买纸用）</h3>
       <table>
@@ -143,10 +195,12 @@ function exportCsv() {
             <th>颜色</th>
             <th class="num">分段高 (mm)</th>
             <th class="num">该层直径 (mm)</th>
+            <th class="num">横篾档/道数</th>
             <th class="num">裁片种类</th>
             <th class="num">每块面积 (m²)</th>
             <th class="num">块数</th>
             <th class="num">合计面积 (m²)</th>
+            <th class="num">该层承重 (g)</th>
           </tr>
         </thead>
         <tbody>
@@ -158,10 +212,12 @@ function exportCsv() {
             </td>
             <td class="num mono">{{ r.height.toFixed(1) }}</td>
             <td class="num mono">{{ r.diameter.toFixed(1) }}</td>
+            <td class="num mono">{{ r.gradeName }} {{ r.gradeW.toFixed(1) }}×{{ r.gradeT.toFixed(1) }} / {{ r.courses }} 道</td>
             <td class="num mono">{{ r.kinds }}</td>
             <td class="num mono">{{ (r.perPiece / 1e6).toFixed(4) }}</td>
             <td class="num mono">{{ r.qty }}</td>
             <td class="num mono">{{ r.areaM2.toFixed(3) }}</td>
+            <td class="num mono strong">{{ r.layerMassG.toFixed(1) }}</td>
           </tr>
         </tbody>
       </table>
@@ -386,6 +442,97 @@ tr.led td {
   padding: 10px 14px;
   font-size: 11.5px;
   color: var(--ink-soft);
+}
+
+.lock-banner {
+  margin: 0;
+  padding: 9px 12px;
+  font-size: 12.5px;
+  color: #8f1c19;
+  background: #fdecea;
+  border: 1px solid #e3a6a0;
+  border-radius: 8px;
+}
+
+button.locked {
+  border-style: dashed;
+  color: #a85a52;
+}
+
+.mass-bar {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.mb {
+  background: var(--surface);
+  padding: 10px 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.mb span {
+  font-size: 11px;
+  color: var(--ink-soft);
+}
+
+.mb b {
+  font-family: var(--mono);
+  font-size: 13.5px;
+}
+
+.mb.total b {
+  color: #8f1c19;
+}
+
+.mb.force b {
+  color: var(--blue);
+}
+
+.grades {
+  box-shadow: var(--shadow);
+  border-radius: 10px;
+}
+
+.grades h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+}
+
+.grades table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+  font-size: 13px;
+  box-shadow: var(--shadow);
+}
+
+.grades th {
+  text-align: left;
+  padding: 8px 14px;
+  background: var(--surface-2);
+  color: var(--ink-soft);
+  font-weight: 500;
+  font-size: 11.5px;
+  border-bottom: 1px solid var(--line);
+}
+
+.grades td {
+  padding: 8px 14px;
+  border-bottom: 1px dashed var(--line);
+}
+
+.grades tr:last-child td {
+  border-bottom: none;
 }
 
 .palette {
